@@ -1,0 +1,44 @@
+# Cessna 172 Skyhawk G1000 (Asobo / MSFS 2024).
+# Status: phase 2 starter. Entries are standard SDK variables and events. The G1000 bezel
+# and the 2024 cockpit interactions (input events, B:) still need to be recorded with the
+# Var Recorder (phase 5); see `skylink probe` to check what reads correctly in your sim.
+id: asobo-c172sp-g1000
+name: Cessna 172 Skyhawk G1000 (Asobo)
+version: 1
+extends: common
+match:
+  atc_model: ["C172"]
+  title_contains: ["172", "G1000"]
+  path_contains: ["asobo_c172sp_g1000"]
+groups:
+  - id: electrical
+    vars:
+      - id: alternator
+        class: state
+        read: "A:GENERAL ENG MASTER ALTERNATOR:1, Bool"
+        write: { kevent: TOGGLE_ALTERNATOR1, mode: toggle }
+
+  - id: fuel
+    order: 20
+    vars:
+      - id: fuel_pump
+        class: state
+        read: "A:GENERAL ENG FUEL PUMP SWITCH:1, Bool"
+        write: { kevent: TOGGLE_ELECT_FUEL_PUMP1, mode: toggle }
+      - id: fuel_selector
+        class: state
+        read: "A:FUEL TANK SELECTOR:1, Enum"
+        write: "K:FUEL_SELECTOR_SET"
+      - id: mixture
+        class: analog
+        read: "A:GENERAL ENG MIXTURE LEVER POSITION:1, Percent"
+        epsilon: 0.5
+        write: { kevent: MIXTURE1_SET, param: "round(value * 163.83)" }
+
+  - id: airframe
+    vars:
+      - id: flaps_handle
+        class: state
+        read: "A:FLAPS HANDLE INDEX, Number"
+        write: { kevent: FLAPS_SET, param: "round(value * 16383 / 3)" }
+        note: "4 detents: UP, 10, 20, FULL"

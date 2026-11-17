@@ -1,0 +1,20 @@
+# Used only when no aircraft-specific definition matches. SkyLink shows a warning banner:
+# standard switches, radios and autopilot knobs sync, but aircraft-specific systems (most
+# airliner overhead panels, FMS, EFB) do not.
+id: generic
+name: Generic aircraft (fallback)
+extends: common
+match:
+  fallback: true
+groups:
+  - id: airframe
+    vars:
+      - id: gear_handle
+        class: state
+        read: "A:GEAR HANDLE POSITION, Bool"
+        write: "K:GEAR_SET"
+      - id: flaps_handle
+        class: state
+        read: "A:FLAPS HANDLE PERCENT, Percent"
+        write: { kevent: FLAPS_SET, param: "round(value * 163.83)" }
+        epsilon: 1

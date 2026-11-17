@@ -1,0 +1,27 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\SkyLink.Core\SkyLink.Core.csproj" />
+    <ProjectReference Include="..\SkyLink.Definitions\SkyLink.Definitions.csproj" />
+    <ProjectReference Include="..\SkyLink.Net\SkyLink.Net.csproj" />
+    <ProjectReference Include="..\SkyLink.Sim\SkyLink.Sim.csproj" />
+    <ProjectReference Include="..\SkyLink.Session\SkyLink.Session.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <AssemblyName>skylink</AssemblyName>
+    <RootNamespace>SkyLink.Cli</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\definitions\**\*.yaml" Link="definitions\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

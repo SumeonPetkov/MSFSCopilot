@@ -1,0 +1,100 @@
+# Standard simulation variables and key events that almost every MSFS 2024 aircraft honours.
+# Aircraft definitions extend this and add, override (same id) or remove (remove: true) entries.
+#
+# Classes: state = switches (last writer wins), analog = knobs (streamed + settle),
+#          event = button presses (exactly once, in order), derived = computed by the aircraft
+#          (only compared, never written), control = flight controls (pilot flying only).
+id: common
+abstract: true
+groups:
+  - id: electrical
+    order: 10
+    vars:
+      - id: battery
+        class: state
+        read: "A:ELECTRICAL MASTER BATTERY:1, Bool"
+        write: { kevent: TOGGLE_MASTER_BATTERY, mode: toggle }
+      - id: avionics_master
+        class: state
+        read: "A:AVIONICS MASTER SWITCH, Bool"
+        write: { kevent: AVIONICS_MASTER_SET, param: value }
+
+  - id: lights
+    order: 30
+    vars:
+      - { id: beacon,  class: state, read: "A:LIGHT BEACON, Bool",  write: "K:BEACON_LIGHTS_SET" }
+      - { id: landing, class: state, read: "A:LIGHT LANDING, Bool", write: "K:LANDING_LIGHTS_SET" }
+      - { id: taxi,    class: state, read: "A:LIGHT TAXI, Bool",    write: "K:TAXI_LIGHTS_SET" }
+      - { id: nav,     class: state, read: "A:LIGHT NAV, Bool",     write: "K:NAV_LIGHTS_SET" }
+      - { id: strobe,  class: state, read: "A:LIGHT STROBE, Bool",  write: "K:STROBES_SET" }
+      - { id: panel,   class: state, read: "A:LIGHT PANEL, Bool",   write: "K:PANEL_LIGHTS_SET" }
+
+  - id: airframe
+    order: 40
+    vars:
+      - id: parking_brake
+        class: state
+        read: "A:BRAKE PARKING POSITION, Bool"
+        write: { kevent: PARKING_BRAKES, mode: toggle }
+      - id: pitot_heat
+        class: state
+        read: "A:PITOT HEAT, Bool"
+        write: "K:PITOT_HEAT_SET"
+
+  - id: radios
+    order: 60
+    vars:
+      - { id: com1_active,  class: state, read: "A:COM ACTIVE FREQUENCY:1, Hz",  write: "K:COM_RADIO_SET_HZ" }
+      - { id: com1_standby, class: state, read: "A:COM STANDBY FREQUENCY:1, Hz", write: "K:COM_STBY_RADIO_SET_HZ" }
+      - { id: com2_active,  class: state, read: "A:COM ACTIVE FREQUENCY:2, Hz",  write: "K:COM2_RADIO_SET_HZ" }
+      - { id: com2_standby, class: state, read: "A:COM STANDBY FREQUENCY:2, Hz", write: "K:COM2_STBY_RADIO_SET_HZ" }
+      - { id: nav1_active,  class: state, read: "A:NAV ACTIVE FREQUENCY:1, Hz",  write: "K:NAV1_RADIO_SET_HZ" }
+      - { id: nav1_standby, class: state, read: "A:NAV STANDBY FREQUENCY:1, Hz", write: "K:NAV1_STBY_SET_HZ" }
+      - { id: nav2_active,  class: state, read: "A:NAV ACTIVE FREQUENCY:2, Hz",  write: "K:NAV2_RADIO_SET_HZ" }
+      - { id: nav2_standby, class: state, read: "A:NAV STANDBY FREQUENCY:2, Hz", write: "K:NAV2_STBY_SET_HZ" }
+      - id: transponder
+        class: state
+        read: "A:TRANSPONDER CODE:1, Number"
+        write: { kevent: XPNDR_SET, param: "bcd16(value)" }
+
+  - id: instruments
+    order: 70
+    vars:
+      - id: baro_mb
+        class: analog
+        read: "A:KOHLSMAN SETTING MB:1, Millibars"
+        epsilon: 0.05
+        write: { kevent: KOHLSMAN_SET, param: "round(value * 16)" }
+
+  - id: autopilot
+    order: 80
+    vars:
+      # Knobs: the selected values themselves are synced.
+      - id: heading_bug
+        class: analog
+        read: "A:AUTOPILOT HEADING LOCK DIR, Degrees"
+        epsilon: 0.5
+        write: { kevent: HEADING_BUG_SET, param: "round(value)" }
+      - id: altitude_select
+        class: analog
+        read: "A:AUTOPILOT ALTITUDE LOCK VAR, Feet"
+        epsilon: 1
+        write: { kevent: AP_ALT_VAR_SET_ENGLISH, param: "round(value)" }
+      - id: vs_select
+        class: analog
+        read: "A:AUTOPILOT VERTICAL HOLD VAR, Feet/minute"
+        epsilon: 1
+        write: { kevent: AP_VS_VAR_SET_ENGLISH, param: "round(value)" }
+      # Mode buttons are presses, replayed exactly once on the other side. The resulting modes
+      # are computed by the autopilot itself, so they are only compared (derived).
+      - { id: ap_master_press, class: event, capture: { kevent: AP_MASTER } }
+      - { id: ap_hdg_press,    class: event, capture: { kevent: AP_HDG_HOLD } }
+      - { id: ap_nav_press,    class: event, capture: { kevent: AP_NAV1_HOLD } }
+      - { id: ap_apr_press,    class: event, capture: { kevent: AP_APR_HOLD } }
+      - { id: ap_alt_press,    class: event, capture: { kevent: AP_ALT_HOLD } }
+      - { id: ap_vs_press,     class: event, capture: { kevent: AP_VS_HOLD } }
+      - { id: fd_press,        class: event, capture: { kevent: TOGGLE_FLIGHT_DIRECTOR } }
+      - { id: ap_master,   class: derived, read: "A:AUTOPILOT MASTER, Bool",           epsilon: 0.5 }
+      - { id: ap_hdg_mode, class: derived, read: "A:AUTOPILOT HEADING LOCK, Bool",     epsilon: 0.5 }
+      - { id: ap_nav_mode, class: derived, read: "A:AUTOPILOT NAV1 LOCK, Bool",        epsilon: 0.5 }
+      - { id: ap_alt_mode, class: derived, read: "A:AUTOPILOT ALTITUDE LOCK, Bool",    epsilon: 0.5 }

@@ -1,0 +1,16 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\SkyLink.Core\SkyLink.Core.csproj" />
+    <ProjectReference Include="..\SkyLink.Definitions\SkyLink.Definitions.csproj" />
+    <ProjectReference Include="..\SkyLink.Net\SkyLink.Net.csproj" />
+    <ProjectReference Include="..\SkyLink.Sim\SkyLink.Sim.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>
