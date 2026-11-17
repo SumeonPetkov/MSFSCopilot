@@ -1,0 +1,275 @@
+﻿<ui:FluentWindow x:Class="SkyLink.App.MainWindow"
+                 xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                 xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+                 xmlns:app="clr-namespace:SkyLink.App"
+                 Title="SkyLink" Width="1280" Height="820" MinWidth="940" MinHeight="640"
+                 ExtendsContentIntoTitleBar="True" WindowBackdropType="Mica" WindowCornerPreference="Round"
+                 WindowStartupLocation="CenterScreen">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <ui:TitleBar Grid.Row="0" Title="SkyLink · shared cockpit for MSFS 2024" />
+
+        <!-- Messages -->
+        <ui:InfoBar Grid.Row="1" Margin="16,0,16,8" IsOpen="True" IsClosable="True"
+                    Visibility="{Binding Message, Converter={x:Static app:Converters.NotNullToVisible}}"
+                    Message="{Binding Message}"
+                    Severity="{Binding MessageIsError, Converter={x:Static app:Converters.ErrorToSeverity}}">
+        </ui:InfoBar>
+
+        <Grid Grid.Row="2" Margin="16,0,16,16">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="320" />
+                <ColumnDefinition Width="16" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <!-- ============================== left: you + players ============================== -->
+            <DockPanel Grid.Column="0" LastChildFill="True">
+                <ui:Card DockPanel.Dock="Top" Margin="0,0,0,12" Padding="16">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource SectionTitle}" Text="YOU" />
+                        <ui:TextBox Text="{Binding PlayerName, UpdateSourceTrigger=LostFocus}" PlaceholderText="Your name" Margin="0,0,0,10" />
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                            <Ellipse Width="8" Height="8" Margin="0,0,8,0" VerticalAlignment="Center"
+                                     Fill="{Binding SimConnected, Converter={x:Static app:Converters.OkToBrush}}" />
+                            <TextBlock Text="{Binding SimText}" TextWrapping="Wrap" FontSize="12" />
+                        </StackPanel>
+                        <TextBlock Text="{Binding NetworkText}" Style="{StaticResource Muted}" Margin="16,0,0,2" />
+                        <DockPanel Margin="16,0,0,0">
+                            <ui:Button DockPanel.Dock="Right" Content="Re-read" Padding="8,2" FontSize="11" Command="{Binding RefreshAircraftCommand}" />
+                            <TextBlock Text="{Binding CatalogText}" Style="{StaticResource Muted}" VerticalAlignment="Center" />
+                        </DockPanel>
+                    </StackPanel>
+                </ui:Card>
+
+                <ui:Card DockPanel.Dock="Bottom" Margin="0,12,0,0" Padding="16">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource SectionTitle}" Text="ADD A PLAYER BY ADDRESS" />
+                        <DockPanel>
+                            <ui:Button DockPanel.Dock="Right" Content="Add" Margin="8,0,0,0" Command="{Binding AddPeerCommand}" />
+                            <ui:TextBox Text="{Binding ManualAddress, UpdateSourceTrigger=PropertyChanged}" PlaceholderText="Tailscale/VPN IP, e.g. 100.64.0.2" AutomationProperties.Name="Player address" />
+                        </DockPanel>
+                        <TextBlock Style="{StaticResource Muted}" Margin="0,6,0,0"
+                                   Text="Players on your LAN and on your Tailscale tailnet appear automatically." />
+                    </StackPanel>
+                </ui:Card>
+
+                <ui:Card Padding="16" VerticalAlignment="Stretch" VerticalContentAlignment="Stretch">
+                    <DockPanel>
+                        <DockPanel DockPanel.Dock="Top" Margin="0,0,0,8">
+                            <ui:Button DockPanel.Dock="Right" Content="Create party" Appearance="Primary" Icon="{ui:SymbolIcon PeopleAdd24}"
+                                       Command="{Binding CreatePartyCommand}" Visibility="{Binding NotInParty, Converter={StaticResource Visible}}" />
+                            <TextBlock Style="{StaticResource SectionTitle}" Text="PLAYERS NEARBY" VerticalAlignment="Center" Margin="0" />
+                        </DockPanel>
+                        <Grid>
+                            <TextBlock Style="{StaticResource Muted}" Margin="0,8" Text="Nobody yet. Other players running SkyLink on your network or tailnet show up here."
+                                       Visibility="{Binding Players.Count, Converter={x:Static app:Converters.ZeroToVisible}}" />
+                            <ItemsControl ItemsSource="{Binding Players}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Margin="0,0,0,8" Padding="10" CornerRadius="6" Background="{DynamicResource ControlFillColorDefaultBrush}">
+                                            <DockPanel>
+                                                <ui:Button DockPanel.Dock="Right" Content="Join" Appearance="Primary" VerticalAlignment="Center"
+                                                           Visibility="{Binding CanJoin, Converter={StaticResource Visible}}"
+                                                           Command="{Binding DataContext.JoinCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                           CommandParameter="{Binding}" />
+                                                <StackPanel>
+                                                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
+                                                    <TextBlock Text="{Binding Detail}" Style="{StaticResource Muted}" />
+                                                    <TextBlock Text="{Binding PartyText}" Style="{StaticResource Muted}" />
+                                                </StackPanel>
+                                            </DockPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </Grid>
+                    </DockPanel>
+                </ui:Card>
+            </DockPanel>
+
+            <!-- ============================== right: party ============================== -->
+            <Grid Grid.Column="2">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="150" />
+                </Grid.RowDefinitions>
+
+                <!-- Not in a party -->
+                <ui:Card Grid.Row="0" Padding="32" Visibility="{Binding NotInParty, Converter={StaticResource Visible}}">
+                    <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="520">
+                        <ui:SymbolIcon Symbol="AirplaneTakeOff24" FontSize="56" Foreground="{DynamicResource AccentTextFillColorPrimaryBrush}" />
+                        <TextBlock Text="Fly together" FontSize="28" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,12,0,8" />
+                        <TextBlock Style="{StaticResource Muted}" FontSize="14" TextAlignment="Center"
+                                   Text="Create a party and your co-pilot joins it from their list, or join a party you can see on the left. One of you sits as Captain, the other as First Officer. Pick an aircraft you both have, import a SimBrief plan, and the Captain starts the flight for both of you." />
+                    </StackPanel>
+                </ui:Card>
+
+                <!-- In a party -->
+                <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto" Focusable="False" Visibility="{Binding InParty, Converter={StaticResource Visible}}">
+                    <StackPanel>
+                        <!-- header -->
+                        <DockPanel Margin="0,0,0,12">
+                            <ui:Button DockPanel.Dock="Right" Content="Leave party" Icon="{ui:SymbolIcon ArrowExit20}" Command="{Binding LeavePartyCommand}" />
+                            <StackPanel>
+                                <TextBlock Text="{Binding PartyName}" FontSize="24" FontWeight="SemiBold" />
+                                <TextBlock Text="{Binding PartyRole}" Style="{StaticResource Muted}" />
+                            </StackPanel>
+                        </DockPanel>
+
+                        <!-- seats -->
+                        <Grid Margin="0,0,0,12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <ui:Card Grid.Column="0" Padding="16" VerticalAlignment="Stretch" VerticalContentAlignment="Top">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource SeatLabel}" Text="CAPTAIN · LEFT SEAT" />
+                                    <TextBlock Text="{Binding CaptainName}" FontSize="20" FontWeight="SemiBold" Margin="0,4,0,2" />
+                                    <TextBlock Text="{Binding CaptainStatus}" Style="{StaticResource Muted}" MinHeight="32" />
+                                    <ui:Button Content="Sit here" Margin="0,8,0,0" Command="{Binding TakeCaptainCommand}"
+                                               Visibility="{Binding CanTakeCaptain, Converter={StaticResource Visible}}" />
+                                </StackPanel>
+                            </ui:Card>
+                            <ui:Button Grid.Column="1" Margin="12,0" VerticalAlignment="Center" Icon="{ui:SymbolIcon ArrowSwap24}" ToolTip="Swap seats" AutomationProperties.Name="Swap seats"
+                                       Command="{Binding SwapSeatsCommand}" />
+                            <ui:Card Grid.Column="2" Padding="16" VerticalAlignment="Stretch" VerticalContentAlignment="Top">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource SeatLabel}" Text="FIRST OFFICER · RIGHT SEAT" />
+                                    <TextBlock Text="{Binding FirstOfficerName}" FontSize="20" FontWeight="SemiBold" Margin="0,4,0,2" />
+                                    <TextBlock Text="{Binding FirstOfficerStatus}" Style="{StaticResource Muted}" MinHeight="32" />
+                                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                        <ui:Button Content="Sit here" Command="{Binding TakeFirstOfficerCommand}"
+                                                   Visibility="{Binding CanTakeFirstOfficer, Converter={StaticResource Visible}}" />
+                                        <ui:Button Content="Remove" Margin="8,0,0,0" Command="{Binding KickOtherCommand}"
+                                                   Visibility="{Binding CanKick, Converter={StaticResource Visible}}" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </ui:Card>
+                        </Grid>
+
+                        <!-- flight setup (lobby) -->
+                        <ui:Card Padding="16" Margin="0,0,0,12" Visibility="{Binding InLobbyPhase, Converter={StaticResource Visible}}">
+                            <StackPanel IsEnabled="{Binding SetupEditable}">
+                                <DockPanel Margin="0,0,0,8">
+                                    <TextBlock DockPanel.Dock="Right" Text="{Binding EditedBy}" Style="{StaticResource Muted}" />
+                                    <TextBlock Style="{StaticResource SectionTitle}" Text="FLIGHT SETUP" Margin="0" />
+                                </DockPanel>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="2*" />
+                                        <ColumnDefinition Width="12" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="Aircraft" Style="{StaticResource Muted}" Margin="0,0,0,4" />
+                                        <ComboBox ItemsSource="{Binding Aircraft}" SelectedItem="{Binding SelectedAircraft}" AutomationProperties.Name="Aircraft" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock Text="Livery" Style="{StaticResource Muted}" Margin="0,0,0,4" />
+                                        <ComboBox ItemsSource="{Binding Liveries}" SelectedItem="{Binding SelectedLivery}" AutomationProperties.Name="Livery" />
+                                    </StackPanel>
+                                </Grid>
+                                <TextBlock Text="{Binding CatalogHint}" Style="{StaticResource Muted}" Margin="0,4,0,12" />
+
+                                <Grid Margin="0,0,0,12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="12" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="12" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="12" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="Callsign / tail number" Style="{StaticResource Muted}" Margin="0,0,0,4" />
+                                        <ui:TextBox Text="{Binding Callsign, UpdateSourceTrigger=PropertyChanged}" PlaceholderText="e.g. DLH4AB" AutomationProperties.Name="Callsign" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock Text="Airline callsign" Style="{StaticResource Muted}" Margin="0,0,0,4" />
+                                        <ui:TextBox Text="{Binding AirlineCallsign, UpdateSourceTrigger=PropertyChanged}" PlaceholderText="e.g. LUFTHANSA" AutomationProperties.Name="Airline callsign" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="4">
+                                        <TextBlock Text="Flight number" Style="{StaticResource Muted}" Margin="0,0,0,4" />
+                                        <ui:TextBox Text="{Binding FlightNumber, UpdateSourceTrigger=PropertyChanged}" PlaceholderText="e.g. 4AB" AutomationProperties.Name="Flight number" />
+                                    </StackPanel>
+                                    <ui:Button Grid.Column="6" VerticalAlignment="Bottom" Content="Apply" Command="{Binding ApplyCallsignCommand}" />
+                                </Grid>
+
+                                <TextBlock Text="SimBrief" Style="{StaticResource Muted}" Margin="0,0,0,4" />
+                                <DockPanel Margin="0,0,0,8">
+                                    <ui:Button DockPanel.Dock="Right" Content="Clear" Margin="8,0,0,0" Command="{Binding ClearPlanCommand}"
+                                               Visibility="{Binding HasPlan, Converter={StaticResource Visible}}" />
+                                    <ui:Button DockPanel.Dock="Right" Content="Import latest plan" Margin="8,0,0,0" Icon="{ui:SymbolIcon CloudArrowDown24}"
+                                               Command="{Binding ImportSimBriefCommand}" />
+                                    <ui:TextBox Text="{Binding SimBriefUser, UpdateSourceTrigger=PropertyChanged}" PlaceholderText="SimBrief username or pilot ID" AutomationProperties.Name="SimBrief user" />
+                                </DockPanel>
+                                <Border Padding="12" CornerRadius="6" Background="{DynamicResource ControlFillColorSecondaryBrush}">
+                                    <TextBlock Text="{Binding PlanSummary}" TextWrapping="Wrap" FontFamily="Cascadia Mono, Consolas" FontSize="12" />
+                                </Border>
+                            </StackPanel>
+                        </ui:Card>
+
+                        <!-- start -->
+                        <ui:Card Padding="16" Margin="0,0,0,12" Visibility="{Binding InLobbyPhase, Converter={StaticResource Visible}}">
+                            <DockPanel>
+                                <ui:Button DockPanel.Dock="Right" Content="Start flight" Appearance="Primary" FontSize="16" Padding="24,10"
+                                           Icon="{ui:SymbolIcon Play24}" IsEnabled="{Binding CanStart}" Command="{Binding StartFlightCommand}" />
+                                <StackPanel VerticalAlignment="Center">
+                                    <TextBlock Text="One click starts MSFS on both PCs, loads this flight and seats you in the shared cockpit." TextWrapping="Wrap" Margin="0,0,16,0" />
+                                    <TextBlock Text="{Binding StartHint}" Style="{StaticResource Muted}" />
+                                </StackPanel>
+                            </DockPanel>
+                        </ui:Card>
+
+                        <!-- in flight -->
+                        <ui:Card Padding="16" Margin="0,0,0,12" Visibility="{Binding InFlightPhase, Converter={StaticResource Visible}}">
+                            <StackPanel>
+                                <TextBlock Text="{Binding FlightHeadline}" FontSize="20" FontWeight="SemiBold" />
+                                <TextBlock Text="{Binding MyStage, StringFormat=You: {0}}" Margin="0,8,0,0" />
+                                <TextBlock Text="{Binding ControlsText}" Margin="0,4,0,0" FontWeight="SemiBold" Foreground="{DynamicResource AccentTextFillColorPrimaryBrush}" />
+                                <TextBlock Text="{Binding SessionText}" Style="{StaticResource Muted}" Margin="0,4,0,12" />
+                                <StackPanel Orientation="Horizontal">
+                                    <ui:Button Content="Request controls" Command="{Binding RequestControlsCommand}" />
+                                    <ui:Button Content="Take controls" Margin="8,0,0,0" Command="{Binding TakeControlsCommand}" />
+                                    <ui:Button Content="Give controls" Margin="8,0,0,0" Command="{Binding GiveControlsCommand}" />
+                                    <ui:Button Content="End flight" Margin="24,0,0,0" Appearance="Danger" Command="{Binding EndFlightCommand}" />
+                                </StackPanel>
+                            </StackPanel>
+                        </ui:Card>
+                    </StackPanel>
+                </ScrollViewer>
+
+                <!-- log -->
+                <ui:Card Grid.Row="1" Margin="0,12,0,0" Padding="12">
+                    <DockPanel>
+                        <TextBlock DockPanel.Dock="Top" Style="{StaticResource SectionTitle}" Text="ACTIVITY" Margin="0,0,0,4" />
+                        <ListBox ItemsSource="{Binding Log}" Background="Transparent" BorderThickness="0"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding}" TextWrapping="Wrap" FontFamily="Cascadia Mono, Consolas" FontSize="11" />
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                            <ListBox.ItemContainerStyle>
+                                <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+                                    <Setter Property="Padding" Value="4,1" />
+                                    <Setter Property="MinHeight" Value="0" />
+                                </Style>
+                            </ListBox.ItemContainerStyle>
+                        </ListBox>
+                    </DockPanel>
+                </ui:Card>
+            </Grid>
+        </Grid>
+    </Grid>
+</ui:FluentWindow>

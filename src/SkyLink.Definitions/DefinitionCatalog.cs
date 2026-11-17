@@ -49,6 +49,18 @@ public sealed class DefinitionCatalog
         return c;
     }
 
+    /// <summary>The definitions folder next to the executable, or the nearest one above the current directory.</summary>
+    public static string FindFolder()
+    {
+        foreach (var start in new[] { AppContext.BaseDirectory, Directory.GetCurrentDirectory() })
+            for (var d = new DirectoryInfo(start); d is not null; d = d.Parent)
+            {
+                string candidate = Path.Combine(d.FullName, "definitions");
+                if (Directory.Exists(Path.Combine(candidate, "_base"))) return candidate;
+            }
+        return Path.Combine(AppContext.BaseDirectory, "definitions");
+    }
+
     public static DefinitionCatalog FromYaml(params (string Name, string Yaml)[] files)
     {
         var c = new DefinitionCatalog();

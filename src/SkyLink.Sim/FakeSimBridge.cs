@@ -8,7 +8,7 @@ namespace SkyLink.Sim;
 /// move the variable they set, and an optional "fake pilot" that flips switches, turns knobs
 /// and presses buttons. Used by <c>skylink host/join --fake-sim</c> and the integration tests.
 /// </summary>
-public sealed class FakeSimBridge : SimBridgeBase
+public sealed class FakeSimBridge : SimBridgeBase, IFlightSim
 {
     private readonly Random _rng;
     private readonly int _latencyMs;
@@ -53,6 +53,52 @@ public sealed class FakeSimBridge : SimBridgeBase
 
     public override string Status => $"fake sim: {Definition!.Name}";
 
+    // ---- flight setup (IFlightSim): a pretend MSFS with an installed-aircraft list
+
+    public List<(string Title, string Livery)> InstalledAircraft { get; set; } =
+    [
+        ("A320neo V2", "Default"), ("A320neo V2", "Lufthansa"), ("A320neo V2", "easyJet"),
+        ("Cessna 172 Skyhawk G1000", "White"), ("Cessna 172 Skyhawk G1000", "Blue Stripe"),
+        ("Boeing 737 MAX 8", "Default"),
+    ];
+
+    public bool IsConnected => true;
+    public bool IsInFlight { get; private set; } = true;
+    public string? AircraftTitle { get; private set; } = "Cessna 172 Skyhawk G1000";
+    public string ModuleStatus => "fake";
+    public bool IsFollowing => !IsPilotFlying && Follower.HasData;
+    public string? LastFlightLoaded { get; private set; }
+    public string? LastPlanLoaded { get; private set; }
+    public (string? AtcId, string? Airline, string? FlightNumber) Callsign { get; private set; }
+    public event Action<List<(string Title, string Livery)>>? AircraftCatalog;
+    private long _flightLoadedAt = -1;
+    private string? _loadingTitle;
+
+    public bool RequestAircraftCatalog()
+    {
+        AircraftCatalog?.Invoke([.. InstalledAircraft]);
+        return true;
+    }
+
+    public bool LoadFlight(string fltPath)
+    {
+        LastFlightLoaded = fltPath;
+        // Read the aircraft and start point back out of the .flt, as MSFS would.
+        string[] lines = File.ReadAllLines(fltPath);
+        _loadingTitle = lines.FirstOrDefault(l => l.StartsWith("Sim="))?[4..];
+        IsInFlight = false;
+        _flightLoadedAt = _now;
+        return true;
+    }
+
+    public bool LoadFlightPlan(string plnPath)
+    {
+        LastPlanLoaded = plnPath;
+        return true;
+    }
+
+    public void SetCallsign(string? atcId, string? airline, string? flightNumber) => Callsign = (atcId, airline, flightNumber);
+
     public double Get(int v) => _values[v];
 
     /// <summary>The local pilot moves something in the cockpit.</summary>
@@ -68,6 +114,13 @@ public sealed class FakeSimBridge : SimBridgeBase
     public override void Pump(long now)
     {
         _now = now;
+        if (_flightLoadedAt >= 0 && now - _flightLoadedAt >= 1500)
+        {
+            // The fake "loading screen" is over.
+            _flightLoadedAt = -1;
+            AircraftTitle = _loadingTitle ?? AircraftTitle;
+            IsInFlight = true;
+        }
         for (int i = 0; i < _pending.Count;)
         {
             var p = _pending[i];

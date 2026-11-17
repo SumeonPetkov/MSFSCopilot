@@ -11,7 +11,7 @@ namespace SkyLink.Sim;
 /// executes writes. Every SimConnect exception is mapped back to the variable or event that
 /// caused it, so a wrong name in a definition is reported, never silently ignored.
 /// </summary>
-public sealed class SimConnectBridge : SimBridgeBase
+public sealed class SimConnectBridge : SimBridgeBase, IFlightSim
 {
     private const uint DefTitle = 1, ReqTitle = 1;
     private const uint DefFlightRead = 30, ReqFlight = 30, DefFlightPose = 31, DefFlightMotion = 32;
@@ -32,6 +32,8 @@ public sealed class SimConnectBridge : SimBridgeBase
     private static readonly string[] FreezeEvents = ["FREEZE_LATITUDE_LONGITUDE_SET", "FREEZE_ALTITUDE_SET", "FREEZE_ATTITUDE_SET"];
     private const uint ReqAircraftState = 2;
     private const uint ReqEnumInputEvents = 3;
+    private const uint ReqCatalogAircraft = 5, ReqCatalogHelicopter = 6;
+    private const uint DefAtcId = 33, DefAtcAirline = 34, DefAtcFlightNumber = 35;
     private const uint DefReadBase = 100;
     private const int ReadChunk = 100;
     private const uint DefWriteBase = 10_000;
@@ -75,6 +77,89 @@ public sealed class SimConnectBridge : SimBridgeBase
 
     /// <summary>True while SkyLink holds this aircraft frozen and moves it to follow the other seat.</summary>
     public bool IsFollowing => _frozen;
+
+    /// <summary>MSFS is running and SimConnect is open.</summary>
+    public bool IsConnected => _open;
+
+    /// <summary>Between MSFS's SimStart and SimStop: the pilot is in an aircraft, not in the menus.</summary>
+    public bool IsInFlight { get; private set; }
+
+    /// <summary>Installed aircraft and liveries, after <see cref="RequestAircraftCatalog"/>.</summary>
+    public event Action<List<(string Title, string Livery)>>? AircraftCatalog;
+
+    private readonly List<(string Title, string Livery)> _aircraftList = [];
+    private readonly HashSet<uint> _catalogDone = [];
+
+    /// <summary>Ask MSFS 2024 for every installed aircraft (planes and helicopters) with its liveries.</summary>
+    public bool RequestAircraftCatalog()
+    {
+        if (!_open) return false;
+        _aircraftList.Clear();
+        _catalogDone.Clear();
+        Call(SimConnect_EnumerateSimObjectsAndLiveries(_h, ReqCatalogAircraft, SimObjectType.Aircraft), "list installed aircraft");
+        Call(SimConnect_EnumerateSimObjectsAndLiveries(_h, ReqCatalogHelicopter, SimObjectType.Helicopter), "list installed helicopters");
+        return true;
+    }
+
+    /// <summary>Load a .flt (aircraft, livery, position). Works from the main menu or in flight.</summary>
+    public bool LoadFlight(string fltPath)
+    {
+        if (!_open) return false;
+        Call(SimConnect_FlightLoad(_h, fltPath), $"load flight {fltPath}");
+        return true;
+    }
+
+    public bool LoadFlightPlan(string plnPath)
+    {
+        if (!_open) return false;
+        Call(SimConnect_FlightPlanLoad(_h, plnPath), $"load flight plan {plnPath}");
+        return true;
+    }
+
+    /// <summary>Set the ATC identity of the user's aircraft (tail number / callsign, airline, flight number).</summary>
+    public unsafe void SetCallsign(string? atcId, string? airline, string? flightNumber)
+    {
+        if (!_open) return;
+        void Set(uint def, string name, DataType type, int size, string? value)
+        {
+            if (value is null) return;
+            if (_atcDefined.Add(def)) Call(SimConnect_AddToDataDefinition(_h, def, name, null, type, 0, Unused), $"ATC field {name}");
+            var buf = new byte[size];
+            var bytes = System.Text.Encoding.ASCII.GetBytes(value);
+            Array.Copy(bytes, buf, Math.Min(bytes.Length, size - 1));
+            fixed (byte* p = buf)
+                Call(SimConnect_SetDataOnSimObject(_h, def, ObjectIdUser, 0, 0, (uint)size, p), $"set {name}");
+        }
+        Set(DefAtcId, "ATC ID", DataType.String32, 32, atcId);
+        Set(DefAtcAirline, "ATC AIRLINE", DataType.String64, 64, airline);
+        Set(DefAtcFlightNumber, "ATC FLIGHT NUMBER", DataType.String8, 8, flightNumber);
+    }
+
+    private readonly HashSet<uint> _atcDefined = [];
+
+    private void OnCatalogPage(Recv r)
+    {
+        uint req = r.U32(12);
+        if (req is not (ReqCatalogAircraft or ReqCatalogHelicopter)) return;
+        uint arraySize = r.U32(16), entry = r.U32(20), outOf = r.U32(24);
+        if (arraySize > 0)
+        {
+            int stride = (r.Length - 28) / (int)arraySize;
+            if (stride < 512) throw new InvalidDataException($"aircraft list entry stride {stride} too small");
+            for (int i = 0; i < arraySize; i++)
+            {
+                int off = 28 + i * stride;
+                string title = r.AnsiString(off, 256);
+                if (title.Length > 0) _aircraftList.Add((title, r.AnsiString(off + 256, 256)));
+            }
+        }
+        if (entry + 1 < outOf) return;
+        _catalogDone.Add(req);
+        if (_catalogDone.Count < 2) return;
+        var list = _aircraftList.Distinct().ToList();
+        Info($"MSFS reports {list.Select(x => x.Title).Distinct().Count()} installed aircraft ({list.Count} liveries)");
+        AircraftCatalog?.Invoke(list);
+    }
     private bool _channelReady;
 
     // Bridge module and L-var validation.
@@ -249,6 +334,9 @@ public sealed class SimConnectBridge : SimBridgeBase
                 if (r.U32(12) == ReqBridgeResponse && r.Length >= 40 + BridgeProtocol.FrameSize)
                     _module.OnFrame(r.Bytes(40, BridgeProtocol.FrameSize));
                 break;
+            case RecvId.EnumerateSimobjectAndLiveryList:
+                OnCatalogPage(r);
+                break;
             case RecvId.EnumerateInputEvents:
                 OnInputEventList(r);
                 break;
@@ -320,9 +408,11 @@ public sealed class SimConnectBridge : SimBridgeBase
         switch (eventId)
         {
             case EvtSimStart:
+                IsInFlight = true;
                 RequestAircraftIdentity();
                 return;
             case EvtSimStop:
+                IsInFlight = false;
                 return;
         }
         if (_captureByEventId.TryGetValue(eventId, out int v))
@@ -690,6 +780,8 @@ public sealed class SimConnectBridge : SimBridgeBase
         // Never leave the user's aircraft frozen when SkyLink stops or MSFS disconnects.
         if (_open && _frozen) SetFreeze(false, _now);
         _frozen = false;
+        IsInFlight = false;
+        _atcDefined.Clear();
         if (_open) SimConnect_Close(_h);
         _open = false;
         _h = IntPtr.Zero;

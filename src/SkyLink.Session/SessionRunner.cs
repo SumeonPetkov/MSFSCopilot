@@ -49,13 +49,19 @@ public sealed class SessionRunner : IDisposable
 
     public event Action<string>? Log;
 
-    public SessionRunner(ISimBridge sim, Link link, EngineOptions? options = null)
+    private readonly bool _ownsSim;
+    private readonly Action<string> _simLog;
+
+    /// <param name="ownsSim">False when the sim bridge outlives this session (the desktop app keeps it between flights).</param>
+    public SessionRunner(ISimBridge sim, Link link, EngineOptions? options = null, bool ownsSim = true)
     {
         _sim = sim;
         _link = link;
         _options = options;
+        _ownsSim = ownsSim;
         _status = BuildStatus();
-        _sim.Log += m => Log?.Invoke("[sim] " + m);
+        _simLog = m => Log?.Invoke("[sim] " + m);
+        _sim.Log += _simLog;
         _link.Log += m => Log?.Invoke("[net] " + m);
         _link.Connected += remote =>
         {
@@ -190,7 +196,9 @@ public sealed class SessionRunner : IDisposable
 
     public void Dispose()
     {
+        _engine?.OnDisconnected(Now);
         _link.Dispose();
-        _sim.Dispose();
+        _sim.Log -= _simLog;
+        if (_ownsSim) _sim.Dispose();
     }
 }

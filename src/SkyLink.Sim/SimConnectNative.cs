@@ -34,7 +34,11 @@ internal static class SimConnectNative
         EnumerateInputEvents = 34,
         GetInputEvent = 35,
         SubscribeInputEvent = 36,
+        /// <summary>MSFS 2024: installed aircraft titles and their liveries.</summary>
+        EnumerateSimobjectAndLiveryList = 38,
     }
+
+    public enum SimObjectType : uint { User = 0, All = 1, Aircraft = 2, Helicopter = 3 }
 
     public enum Period : uint { Never = 0, Once = 1, VisualFrame = 2, SimFrame = 3, Second = 4 }
 
@@ -117,6 +121,15 @@ internal static class SimConnectNative
 
     [DllImport(Dll, ExactSpelling = true)]
     public static extern int SimConnect_GetLastSentPacketID(IntPtr handle, out uint sendId);
+
+    [DllImport(Dll, CharSet = CharSet.Ansi, ExactSpelling = true)]
+    public static extern int SimConnect_FlightLoad(IntPtr handle, string fileName);
+
+    [DllImport(Dll, CharSet = CharSet.Ansi, ExactSpelling = true)]
+    public static extern int SimConnect_FlightPlanLoad(IntPtr handle, string fileName);
+
+    [DllImport(Dll, ExactSpelling = true)]
+    public static extern int SimConnect_EnumerateSimObjectsAndLiveries(IntPtr handle, uint requestId, SimObjectType type);
 
     [DllImport(Dll, CharSet = CharSet.Ansi, ExactSpelling = true)]
     public static extern int SimConnect_MapClientDataNameToID(IntPtr handle, string clientDataName, uint clientDataId);

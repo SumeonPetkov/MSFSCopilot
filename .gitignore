@@ -486,3 +486,6 @@ $RECYCLE.BIN/
 # Built bridge module (produced by wasm/build.ps1)
 package/skylink-bridge/modules/
 package/skylink-bridge/layout.json
+
+# The template's "*.app" (macOS bundles) also matches the SkyLink.App project folder on Windows.
+!src/SkyLink.App/

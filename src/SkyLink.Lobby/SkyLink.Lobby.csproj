@@ -1,0 +1,20 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\SkyLink.Core\SkyLink.Core.csproj" />
+    <ProjectReference Include="..\SkyLink.Net\SkyLink.Net.csproj" />
+    <ProjectReference Include="..\SkyLink.Sim\SkyLink.Sim.csproj" />
+    <ProjectReference Include="..\SkyLink.Session\SkyLink.Session.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="LiteNetLib" Version="1.2.0" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

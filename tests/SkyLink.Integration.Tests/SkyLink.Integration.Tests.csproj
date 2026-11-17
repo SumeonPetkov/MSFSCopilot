@@ -28,6 +28,7 @@
     <ProjectReference Include="..\..\src\SkyLink.Sim\SkyLink.Sim.csproj" />
     <ProjectReference Include="..\..\src\SkyLink.Cli\SkyLink.Cli.csproj" />
     <ProjectReference Include="..\..\src\SkyLink.Session\SkyLink.Session.csproj" />
+    <ProjectReference Include="..\..\src\SkyLink.Lobby\SkyLink.Lobby.csproj" />
   </ItemGroup>
 
 </Project>

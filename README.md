@@ -14,7 +14,7 @@ for the full plan.
 | 3. In-sim bridge module (RPN/H-events, L-var name checks) | App side, protocol and installer **done and tested**, channel verified live in MSFS with a stand-in module. The C++ module is written but **not yet compiled**: that needs the MSFS 2024 SDK |
 | 4. Flight model slaving + control handover in the sim | **Done and tested** in simulation (1,000 randomized shared flights) and over real UDP. Not yet run against the live sim, which needs MSFS running |
 | 5. Var Recorder, A320neo/A321 definitions | |
-| 6. WPF UI, diagnostics, release | |
+| 6. Desktop app | **Party lobby done** (discovery, Captain/FO seats, shared flight setup, SimBrief, one-click start), tested with fake sims. Not yet run against real MSFS. Sync Health panel, diagnostics and release still to do |
 
 ## How sync works (short version)
 
@@ -34,7 +34,31 @@ for the full plan.
 - **Control handover** is request → grant → commit, plus a priority takeover. Authority is
   `(epoch, seat)`, carried in every digest, so both seats always agree on exactly one pilot flying.
 
-## Flying with it (CLI, until the app in phase 6)
+## The desktop app (`SkyLink.exe`)
+
+1. **Find each other.** Everyone running SkyLink on your LAN, or on your Tailscale tailnet, shows
+   up under *Players nearby*. Tailscale peers come from `tailscale status`; ZeroTier and Radmin
+   networks are reached by broadcast. Anyone else can be added by IP.
+2. **Party.** One pilot clicks *Create party* and the other clicks *Join*. A party is exactly two
+   pilots: **Captain** (left seat) and **First Officer** (right seat). Either pilot can take the
+   other seat or swap at any time, including in flight. A swap changes who is Captain/FO, not
+   who is flying (use the take/give controls for that).
+3. **Flight setup**, edited live by both pilots:
+   - **Aircraft and livery:** only those installed on *both* PCs are offered. Each PC's list is
+     read from MSFS and remembered, so it's known even while MSFS is closed.
+   - **Callsign / airline / flight number.**
+   - **SimBrief:** imports your latest OFP (route, origin and destination, cruise level, fuel,
+     passengers) and its MSFS flight plan.
+4. **Start flight** (Captain only). Each PC writes the same `.flt`/`.pln`, starts MSFS if needed
+   (Steam or Store), loads the flight, sets the callsign and route, and joins the shared cockpit.
+   The Captain hosts the cockpit link and starts as pilot flying; the First Officer's aircraft
+   follows. Both screens show both pilots' progress. Without a SimBrief plan, the flight starts
+   where the Captain's aircraft is in MSFS right now.
+
+Ports: UDP 47801 discovery, 47802 party, 47800 cockpit link. The party host keeps the
+authoritative party state and resends it every 2 s, so both screens always converge.
+
+## Flying with it (CLI)
 
 Both pilots load the **same aircraft**. The host makes a code and shares an address:
 
