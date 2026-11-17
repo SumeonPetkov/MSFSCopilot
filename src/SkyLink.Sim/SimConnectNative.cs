@@ -30,6 +30,7 @@ internal static class SimConnectNative
         EventFilename = 6,
         SimObjectData = 8,
         SystemState = 15,
+        ClientData = 16,
         EnumerateInputEvents = 34,
         GetInputEvent = 35,
         SubscribeInputEvent = 36,
@@ -39,6 +40,8 @@ internal static class SimConnectNative
 
     [Flags]
     public enum DataRequestFlag : uint { Default = 0, Changed = 1, Tagged = 2 }
+
+    public enum ClientDataPeriod : uint { Never = 0, Once = 1, VisualFrame = 2, OnSet = 3, Second = 4 }
 
     public enum DataType : uint { Invalid = 0, Int32 = 1, Int64 = 2, Float32 = 3, Float64 = 4, String8 = 5, String32 = 6, String64 = 7, String128 = 8, String256 = 9, String260 = 10 }
 
@@ -115,6 +118,21 @@ internal static class SimConnectNative
     [DllImport(Dll, ExactSpelling = true)]
     public static extern int SimConnect_GetLastSentPacketID(IntPtr handle, out uint sendId);
 
+    [DllImport(Dll, CharSet = CharSet.Ansi, ExactSpelling = true)]
+    public static extern int SimConnect_MapClientDataNameToID(IntPtr handle, string clientDataName, uint clientDataId);
+
+    [DllImport(Dll, ExactSpelling = true)]
+    public static extern int SimConnect_CreateClientData(IntPtr handle, uint clientDataId, uint size, uint flags);
+
+    [DllImport(Dll, ExactSpelling = true)]
+    public static extern int SimConnect_AddToClientDataDefinition(IntPtr handle, uint defineId, uint offset, uint sizeOrType, float epsilon, uint datumId);
+
+    [DllImport(Dll, ExactSpelling = true)]
+    public static extern int SimConnect_RequestClientData(IntPtr handle, uint clientDataId, uint requestId, uint defineId, ClientDataPeriod period, uint flags, uint origin, uint interval, uint limit);
+
+    [DllImport(Dll, ExactSpelling = true)]
+    public static extern unsafe int SimConnect_SetClientData(IntPtr handle, uint clientDataId, uint defineId, uint flags, uint reserved, uint unitSize, void* data);
+
     [DllImport(Dll, ExactSpelling = true)]
     public static extern int SimConnect_EnumerateInputEvents(IntPtr handle, uint requestId);
 
@@ -149,6 +167,7 @@ internal readonly ref struct Recv
 
     public uint U32(int offset) => MemoryMarshal.Read<uint>(Slice(offset, 4));
     public ulong U64(int offset) => MemoryMarshal.Read<ulong>(Slice(offset, 8));
+    public ReadOnlySpan<byte> Bytes(int offset, int length) => Slice(offset, length);
     public double F64(int offset) => MemoryMarshal.Read<double>(Slice(offset, 8));
 
     public string AnsiString(int offset, int maxLength)

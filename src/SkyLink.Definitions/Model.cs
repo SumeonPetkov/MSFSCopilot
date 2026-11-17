@@ -58,8 +58,10 @@ public enum SetterKind
     BEvent,
     /// <summary>Fire INC/DEC K: events until the value matches.</summary>
     IncDec,
-    /// <summary>Calculator (RPN) code, executed by the in-sim WASM bridge.</summary>
+    /// <summary>Calculator (RPN) code, executed by the in-sim bridge module. <c>{value}</c> is replaced by the parameter.</summary>
     Rpn,
+    /// <summary>An H: event (HTML/JS instrument event), fired through the bridge module.</summary>
+    HEvent,
 }
 
 public enum WriteMode

@@ -1,0 +1,15 @@
+{
+  "dependencies": [],
+  "content_type": "MISC",
+  "title": "SkyLink Bridge",
+  "manufacturer": "",
+  "creator": "SkyLink",
+  "package_version": "0.3.0",
+  "minimum_game_version": "1.0.0",
+  "release_notes": {
+    "neutral": {
+      "LastUpdate": "Calculator code (RPN/H-events) and L-var listing for SkyLink shared cockpit",
+      "OlderHistory": ""
+    }
+  }
+}

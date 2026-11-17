@@ -24,7 +24,7 @@ public sealed class DefinitionCatalog
     private static readonly HashSet<string> MatchKeys = ["title_contains", "atc_model", "path_contains", "fallback"];
     private static readonly HashSet<string> GroupKeys = ["id", "order", "vars", "remove"];
     private static readonly HashSet<string> VarKeys = ["id", "class", "read", "write", "capture", "epsilon", "note", "remove"];
-    private static readonly HashSet<string> SetterKeys = ["kevent", "bevent", "simvar", "inc", "dec", "step", "rpn", "param", "mode"];
+    private static readonly HashSet<string> SetterKeys = ["kevent", "bevent", "hevent", "simvar", "inc", "dec", "step", "rpn", "param", "mode"];
     private static readonly HashSet<string> CaptureKeys = ["kevent", "bevent", "lvar"];
 
     private readonly List<LintIssue> _issues = [];
@@ -388,7 +388,8 @@ public sealed class DefinitionCatalog
                 return Fail("mode: toggle needs a kevent setter and a 'read' to compare against");
             if (s.Kind == SetterKind.IncDec && read is null) return Fail("inc/dec needs 'read'");
             if (s.Kind == SetterKind.SimVar && s.Var!.Kind == SimRefKind.B) return Fail("simvar setter cannot target a B: event; use bevent");
-            if (s.Kind == SetterKind.Rpn) Warn(file, where, "rpn setters need the SkyLink in-sim bridge (phase 3)");
+            if (s.Kind == SetterKind.Rpn && cls != SyncClass.Event && !s.Target.Contains("{value}"))
+                Warn(file, where, "rpn setter has no {value} placeholder, so the synced value is never passed to the aircraft");
         }
         if (cls == SyncClass.Event && capture!.Kind == CaptureKind.LVarEdge)
             Warn(file, where, "L-var edge capture is reliable only with the in-sim bridge; SimConnect polling can miss single-frame pulses");
@@ -462,7 +463,8 @@ public sealed class DefinitionCatalog
             }
             if (s.StartsWith("K:", StringComparison.OrdinalIgnoreCase)) return new Setter(SetterKind.KEvent, s[2..].Trim(), ParamExpr.Identity);
             if (s.StartsWith("B:", StringComparison.OrdinalIgnoreCase)) return new Setter(SetterKind.BEvent, s[2..].Trim(), ParamExpr.Identity);
-            throw new FormatException($"unknown write '{s}' (use simvar, K:EVENT, B:EVENT or a mapping)");
+            if (s.StartsWith("H:", StringComparison.OrdinalIgnoreCase)) return new Setter(SetterKind.HEvent, s[2..].Trim(), ParamExpr.Identity);
+            throw new FormatException($"unknown write '{s}' (use simvar, K:EVENT, B:EVENT, H:EVENT or a mapping)");
         }
         if (raw is not Dictionary<object, object> dm) throw new FormatException("'write' must be a string, a mapping or a list");
         var d = Map(dm);
@@ -483,11 +485,16 @@ public sealed class DefinitionCatalog
         }
 
         string? S(string key) => d.GetValueOrDefault(key) is { } v ? StripPrefix(Convert.ToString(v, CultureInfo.InvariantCulture)!.Trim()) : null;
-        int kinds = new[] { "kevent", "bevent", "simvar", "inc", "rpn" }.Count(d.ContainsKey);
-        if (kinds != 1) throw new FormatException("a setter needs exactly one of kevent, bevent, simvar, inc, rpn");
+        int kinds = new[] { "kevent", "bevent", "hevent", "simvar", "inc", "rpn" }.Count(d.ContainsKey);
+        if (kinds != 1) throw new FormatException("a setter needs exactly one of kevent, bevent, hevent, simvar, inc, rpn");
 
         if (S("kevent") is { } k) return new Setter(SetterKind.KEvent, k, param, mode);
         if (S("bevent") is { } b) return new Setter(SetterKind.BEvent, b, param, mode);
+        if (S("hevent") is { } h)
+        {
+            if (mode == WriteMode.Toggle) throw new FormatException("hevent setters cannot use mode: toggle (H: events carry no state to compare); use rpn with a condition");
+            return new Setter(SetterKind.HEvent, h, param, mode);
+        }
         if (d.GetValueOrDefault("simvar") is { } sv)
         {
             var target = SimRef.Parse(Convert.ToString(sv, CultureInfo.InvariantCulture)!);

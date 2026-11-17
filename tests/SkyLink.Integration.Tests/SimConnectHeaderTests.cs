@@ -65,6 +65,8 @@ public sealed class SimConnectHeaderTests(ITestOutputHelper output)
         var period = Enum(h, "SIMCONNECT_PERIOD");
         Assert.Equal((long)SimConnectNative.Period.SimFrame, period["SIMCONNECT_PERIOD_SIM_FRAME"]);
         Assert.Equal((long)SimConnectNative.Period.Once, period["SIMCONNECT_PERIOD_ONCE"]);
+        var cdPeriod = Enum(h, "SIMCONNECT_CLIENT_DATA_PERIOD");
+        Assert.Equal((long)SimConnectNative.ClientDataPeriod.OnSet, cdPeriod["SIMCONNECT_CLIENT_DATA_PERIOD_ON_SET"]);
         var types = Enum(h, "SIMCONNECT_DATATYPE");
         Assert.Equal((long)SimConnectNative.DataType.Float64, types["SIMCONNECT_DATATYPE_FLOAT64"]);
         Assert.Equal((long)SimConnectNative.DataType.String256, types["SIMCONNECT_DATATYPE_STRING256"]);

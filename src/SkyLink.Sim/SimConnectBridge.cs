@@ -24,6 +24,11 @@ public sealed class SimConnectBridge : SimBridgeBase
     private const uint CaptureGroup = 1;
     private const uint EvtSimStart = 1, EvtSimStop = 2, EvtAircraftLoaded = 3, EvtFlightLoaded = 4;
     private const int OpenRetryMs = 2000;
+    private const uint CdaCommand = 0x534B0001, CdaResponse = 0x534B0002;
+    private const uint DefCdaCommand = 20_000, DefCdaResponse = 20_001; // outside every other id range
+    private const uint ReqBridgeResponse = 4;
+    private const int LVarRecheckMs = 5000;
+    private const int LVarGiveUpMs = 60_000;
 
     private readonly DefinitionCatalog _catalog;
     private readonly AutoResetEvent _signal = new(false);
@@ -46,6 +51,17 @@ public sealed class SimConnectBridge : SimBridgeBase
     private readonly Dictionary<ulong, List<int>> _varsByInputHash = [];
     private bool _inputEventsEnumerated;
     private long _now;
+    private uint _nextReadDef = DefReadBase;
+    private uint _nextEventId = EventIdBase;
+    private bool _channelReady;
+
+    // Bridge module and L-var validation.
+    private readonly ModuleClient _module;
+    private enum LVarPhase { Idle, WaitingForModule, Listing, Rechecking }
+    private LVarPhase _lvarPhase;
+    private List<(int V, string Name, string Unit)> _lvarsToCheck = [];
+    private long _lvarFirstCheck;
+    private long _lvarNextCheck;
 
     /// <summary>Problems found while binding the definition to the sim (for <c>skylink probe</c>).</summary>
     public List<string> Problems { get; } = [];
@@ -58,7 +74,15 @@ public sealed class SimConnectBridge : SimBridgeBase
     {
         _catalog = catalog;
         SimConnectDll = InstallResolver();
+        _module = new ModuleClient(SendToModule, (uint)Random.Shared.Next(1, int.MaxValue));
+        _module.Log += Info;
     }
+
+    /// <summary>"connected (build)", "NOT INSTALLED" or "checking".</summary>
+    public string ModuleStatus => _module.IsAvailable ? $"connected ({_module.ModuleBuild})" : _module.IsAbsent ? "NOT INSTALLED" : "checking";
+
+    /// <summary>L-vars of this aircraft still unconfirmed by the bridge module.</summary>
+    public int UnconfirmedLVars => _lvarsToCheck.Count;
 
     public override string Status => _status;
     public override WaitHandle DataAvailable => _signal;
@@ -89,6 +113,9 @@ public sealed class SimConnectBridge : SimBridgeBase
             }
             if (!_open) break;
         }
+        if (!_open || !_channelReady) return; // never talk to the module before its areas are mapped
+        _module.Tick(now);
+        AdvanceLVarValidation(now);
     }
 
     private void TryOpen()
@@ -144,6 +171,10 @@ public sealed class SimConnectBridge : SimBridgeBase
             case RecvId.SimObjectData:
                 OnData(r);
                 break;
+            case RecvId.ClientData:
+                if (r.U32(12) == ReqBridgeResponse && r.Length >= 40 + BridgeProtocol.FrameSize)
+                    _module.OnFrame(r.Bytes(40, BridgeProtocol.FrameSize));
+                break;
             case RecvId.EnumerateInputEvents:
                 OnInputEventList(r);
                 break;
@@ -177,6 +208,20 @@ public sealed class SimConnectBridge : SimBridgeBase
         Call(SimConnect_SubscribeToSystemEvent(_h, EvtFlightLoaded, "FlightLoaded"), "subscribe FlightLoaded");
         Call(SimConnect_AddToDataDefinition(_h, DefTitle, "TITLE", null, DataType.String256, 0, Unused), "read TITLE");
         Call(SimConnect_AddToDataDefinition(_h, DefTitle, "ATC MODEL", null, DataType.String64, 0, Unused), "read ATC MODEL");
+
+        // Bridge module channel. Either side may create the areas; "already created" is fine.
+        _module.Reset();
+        Call(SimConnect_MapClientDataNameToID(_h, BridgeProtocol.CommandArea, CdaCommand), "map bridge command area");
+        Call(SimConnect_MapClientDataNameToID(_h, BridgeProtocol.ResponseArea, CdaResponse), "map bridge response area");
+        SimConnect_CreateClientData(_h, CdaCommand, BridgeProtocol.FrameSize, 0);
+        SkipException();
+        SimConnect_CreateClientData(_h, CdaResponse, BridgeProtocol.FrameSize, 0);
+        SkipException();
+        Call(SimConnect_AddToClientDataDefinition(_h, DefCdaCommand, 0, BridgeProtocol.FrameSize, 0, Unused), "bridge command layout");
+        Call(SimConnect_AddToClientDataDefinition(_h, DefCdaResponse, 0, BridgeProtocol.FrameSize, 0, Unused), "bridge response layout");
+        Call(SimConnect_RequestClientData(_h, CdaResponse, ReqBridgeResponse, DefCdaResponse, ClientDataPeriod.OnSet, 0, 0, 0, 0), "subscribe bridge responses");
+        _channelReady = true;
+
         RequestAircraftIdentity();
     }
 
@@ -230,7 +275,7 @@ public sealed class SimConnectBridge : SimBridgeBase
             SelectDefinition();
             return;
         }
-        if (req < DefReadBase || req >= DefReadBase + 1000) return;
+        if (req < DefReadBase || req >= DefWriteBase) return;
         uint count = r.U32(36);
         for (int i = 0, off = 40; i < count; i++, off += 12)
             OnValue((int)r.U32(off), r.F64(off + 4), _now);
@@ -260,12 +305,12 @@ public sealed class SimConnectBridge : SimBridgeBase
 
     private void BindDefinition(AircraftDefinition def)
     {
-        Problems.Clear();
-        uint nextEvent = EventIdBase;
+        // Mappings live as long as the SimConnect connection, across aircraft changes, so ids
+        // must never be reused within one connection.
         uint EventId(string name)
         {
             if (_eventIds.TryGetValue(name, out uint id)) return id;
-            id = nextEvent++;
+            id = _nextEventId++;
             _eventIds[name] = id;
             Call(SimConnect_MapClientEventToSimEvent(_h, id, name), $"K:{name}");
             return id;
@@ -301,20 +346,110 @@ public sealed class SimConnectBridge : SimBridgeBase
         if (_captureByEventId.Count > 0)
             Call(SimConnect_SetNotificationGroupPriority(_h, CaptureGroup, GroupPriorityHighest), "capture group priority");
 
-        for (int c = 0; c * ReadChunk < reads.Count; c++)
-        {
-            uint defId = DefReadBase + (uint)c;
-            _readDefs.Add(defId);
-            foreach (var (v, name, unit) in reads.Skip(c * ReadChunk).Take(ReadChunk))
-                Call(SimConnect_AddToDataDefinition(_h, defId, name, unit, DataType.Float64, 0, (uint)v), $"read {name} ({unit}) for '{def.Vars[v].Spec.Id}'");
-            Call(SimConnect_RequestDataOnSimObject(_h, defId, defId, ObjectIdUser, Period.SimFrame, DataRequestFlag.Changed | DataRequestFlag.Tagged, 0, 0, 0), "request read block " + c);
-        }
+        // A: variables are subscribed now. L: variables wait for the bridge module to confirm they
+        // exist, because subscribing would silently create a misspelled one.
+        SubscribeReads(reads.Where(r => !r.Name.StartsWith("L:")).ToList());
+        _lvarsToCheck = reads.Where(r => r.Name.StartsWith("L:")).ToList();
+        _lvarPhase = _lvarsToCheck.Count > 0 ? LVarPhase.WaitingForModule : LVarPhase.Idle;
+        _lvarFirstCheck = _now;
 
         if (needsInputEvents)
         {
             _inputEventsEnumerated = false;
             Call(SimConnect_EnumerateInputEvents(_h, ReqEnumInputEvents), "enumerate input events");
         }
+    }
+
+    private void SubscribeReads(List<(int V, string Name, string Unit)> reads)
+    {
+        var def = Definition!;
+        for (int c = 0; c * ReadChunk < reads.Count; c++)
+        {
+            // Ids of unbound (cleared) aircraft may be reused once the range is exhausted.
+            if (_nextReadDef >= DefWriteBase) _nextReadDef = DefReadBase;
+            uint defId = _nextReadDef++;
+            _readDefs.Add(defId);
+            foreach (var (v, name, unit) in reads.Skip(c * ReadChunk).Take(ReadChunk))
+                Call(SimConnect_AddToDataDefinition(_h, defId, name, unit, DataType.Float64, 0, (uint)v), $"read {name} ({unit}) for '{def.Vars[v].Spec.Id}'");
+            Call(SimConnect_RequestDataOnSimObject(_h, defId, defId, ObjectIdUser, Period.SimFrame, DataRequestFlag.Changed | DataRequestFlag.Tagged, 0, 0, 0), $"request read block {defId}");
+        }
+    }
+
+    private void AdvanceLVarValidation(long now)
+    {
+        if (Definition is null) return;
+        switch (_lvarPhase)
+        {
+            case LVarPhase.WaitingForModule when _module.IsAbsent:
+                Info($"cannot verify {_lvarsToCheck.Count} L-var names without the SkyLink Bridge package; a misspelled name would silently never sync");
+                SubscribeReads(_lvarsToCheck);
+                _lvarsToCheck = [];
+                _lvarPhase = LVarPhase.Idle;
+                break;
+            case LVarPhase.WaitingForModule when _module.IsAvailable:
+            case LVarPhase.Rechecking when now >= _lvarNextCheck:
+                _lvarPhase = LVarPhase.Listing;
+                int generation = DefinitionGeneration;
+                _module.ListLVars(names =>
+                {
+                    if (generation != DefinitionGeneration || Definition is null) return;
+                    OnLVarList(names);
+                });
+                break;
+        }
+    }
+
+    private void OnLVarList(List<string> names)
+    {
+        var existing = new HashSet<string>(names, StringComparer.OrdinalIgnoreCase);
+        var present = _lvarsToCheck.Where(r => existing.Contains(r.Name[2..])).ToList();
+        _lvarsToCheck = _lvarsToCheck.Where(r => !existing.Contains(r.Name[2..])).ToList();
+        if (present.Count > 0) SubscribeReads(present);
+        if (_lvarsToCheck.Count == 0)
+        {
+            Info($"all L-vars confirmed ({existing.Count} defined in the sim)");
+            _lvarPhase = LVarPhase.Idle;
+            return;
+        }
+        if (_now - _lvarFirstCheck >= LVarGiveUpMs)
+        {
+            foreach (var (v, name, _) in _lvarsToCheck)
+                Problem($"'{Definition!.Vars[v].Spec.Id}': {name} does not exist in this aircraft (misspelled, or not created by this variant); subscribing anyway");
+            SubscribeReads(_lvarsToCheck);
+            _lvarsToCheck = [];
+            _lvarPhase = LVarPhase.Idle;
+            return;
+        }
+        // Gauges create some L-vars only once the cockpit has initialised: look again shortly.
+        _lvarPhase = LVarPhase.Rechecking;
+        _lvarNextCheck = _now + LVarRecheckMs;
+    }
+
+    private unsafe void SendToModule(byte[] frame)
+    {
+        if (!_open || !_channelReady) return;
+        fixed (byte* p = frame)
+            Call(SimConnect_SetClientData(_h, CdaCommand, DefCdaCommand, 0, 0, (uint)frame.Length, p), "send to bridge module");
+    }
+
+    protected override void ExecuteRpn(int v, string code)
+    {
+        if (!_module.IsAvailable)
+        {
+            base.ExecuteRpn(v, code);
+            return;
+        }
+        string id = Definition!.Vars[v].Spec.Id;
+        _module.ExecuteRpn(code, (ok, _) =>
+        {
+            if (!ok) WarnOnce("rpnfail:" + v, $"'{id}': MSFS could not run calculator code '{code}'");
+        });
+    }
+
+    /// <summary>The previous call may legitimately fail (e.g. area already created): ignore its exception.</summary>
+    private void SkipException()
+    {
+        if (SimConnect_GetLastSentPacketID(_h, out uint id) == SOk) _sent[id] = "<ignored>";
     }
 
     private void OnInputEventList(Recv r)
@@ -372,6 +507,8 @@ public sealed class SimConnectBridge : SimBridgeBase
         foreach (int v in _writeDefs) SimConnect_ClearDataDefinition(_h, DefWriteBase + (uint)v);
         _readDefs.Clear();
         _writeDefs.Clear();
+        _lvarsToCheck = [];
+        _lvarPhase = LVarPhase.Idle;
         _captureByEventId.Clear(); // K: mappings stay valid for the connection and are reused
         _varsByInputHash.Clear();
         _inputHashes.Clear();
@@ -427,7 +564,7 @@ public sealed class SimConnectBridge : SimBridgeBase
     private void OnException(uint code, uint sendId, uint index)
     {
         string what = _sent.TryGetValue(sendId, out var w) ? w : $"packet {sendId}";
-        if (!_reportedExceptions.Add(sendId)) return;
+        if (what == "<ignored>" || !_reportedExceptions.Add(sendId)) return;
         Problem($"{what}: MSFS rejected it ({ExceptionName(code)})");
     }
 
@@ -465,6 +602,13 @@ public sealed class SimConnectBridge : SimBridgeBase
         _inputHashes.Clear();
         _sent.Clear();
         _reportedExceptions.Clear();
+        _module.Reset();
+        _channelReady = false;
+        _nextReadDef = DefReadBase;
+        _nextEventId = EventIdBase;
+        _lvarsToCheck = [];
+        _lvarPhase = LVarPhase.Idle;
+        Problems.Clear(); // a new MSFS connection starts with a clean slate
         SetDefinition(null);
         _status = "waiting for Microsoft Flight Simulator 2024";
         _nextOpenAttempt = _now + OpenRetryMs;

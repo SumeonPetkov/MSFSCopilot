@@ -17,6 +17,7 @@ public static class Program
           skylink join HOST[:PORT] --code CODE [options] join a session
           skylink probe [--seconds N] [--defs DIR]      check what the loaded aircraft exposes
           skylink lint [DIR]                            validate aircraft definitions
+          skylink install-bridge [--dry-run]            install the in-sim bridge module into MSFS
 
         options:
           --defs DIR         definitions folder (default: the one shipped with SkyLink)
@@ -42,6 +43,7 @@ public static class Program
                 "code" => PrintCode(),
                 "lint" => Lint(a.Positional.FirstOrDefault() ?? a.Get("defs") ?? FindDefinitions()),
                 "probe" => Probe(a),
+                "install-bridge" => InstallBridge(a),
                 "host" => RunSession(a, host: true),
                 "join" => RunSession(a, host: false),
                 _ => Fail($"unknown command '{args[0]}'\n\n{Usage}"),
@@ -91,6 +93,9 @@ public static class Program
         Console.WriteLine($"path:       {bridge.AircraftPath}");
         if (bridge.Definition is not { } def) return Fail("no aircraft definition active");
         Console.WriteLine($"definition: {def.Id} v{def.Version} ({bridge.Match!.Reason})");
+        Console.WriteLine($"bridge:     {bridge.ModuleStatus}{InstalledBridgeNote()}");
+        if (bridge.UnconfirmedLVars > 0)
+            Console.WriteLine($"            {bridge.UnconfirmedLVars} L-var(s) not found in the sim yet (still checking; run probe longer, e.g. --seconds 70)");
         Console.WriteLine();
         int missing = 0;
         for (int v = 0; v < def.Vars.Count; v++)
@@ -213,6 +218,47 @@ public static class Program
         return catalog;
     }
 
+    private static int InstallBridge(Args a)
+    {
+        string source = a.Get("package") ?? FindUp(Path.Combine("package", BridgeInstaller.PackageFolderName), "manifest.json")
+                        ?? throw new ArgumentException("package/skylink-bridge not found (use --package DIR)");
+        string? community = a.Get("community");
+        if (community is null)
+        {
+            community = BridgeInstaller.FindCommunityFolder(out var cfg)
+                        ?? throw new ArgumentException("could not find MSFS 2024's UserCfg.opt; pass --community DIR");
+            Console.WriteLine($"Community folder: {community} (from {cfg})");
+        }
+        try
+        {
+            Console.WriteLine(BridgeInstaller.Install(source, community, a.Has("dry-run")));
+            return 0;
+        }
+        catch (Exception e) when (e is InvalidOperationException or IOException or UnauthorizedAccessException)
+        {
+            return Fail(e.Message);
+        }
+    }
+
+    private static string InstalledBridgeNote()
+    {
+        if (BridgeInstaller.FindCommunityFolder(out _) is not { } community) return "";
+        var installed = BridgeInstaller.ReadPackage(Path.Combine(community, BridgeInstaller.PackageFolderName));
+        return installed is null ? " (package not installed: skylink install-bridge)" : $" (package {installed.Version} installed)";
+    }
+
+    /// <summary>A folder (containing <paramref name="marker"/>) next to the executable or above the current directory.</summary>
+    private static string? FindUp(string relative, string marker)
+    {
+        foreach (var start in new[] { AppContext.BaseDirectory, Directory.GetCurrentDirectory() })
+            for (var d = new DirectoryInfo(start); d is not null; d = d.Parent)
+            {
+                string candidate = Path.Combine(d.FullName, relative);
+                if (File.Exists(Path.Combine(candidate, marker))) return candidate;
+            }
+        return null;
+    }
+
     /// <summary>The definitions folder next to the executable, or the nearest one above the current directory.</summary>
     public static string FindDefinitions()
     {
@@ -249,7 +295,7 @@ public static class Program
                 }
                 string key = list[i][2..];
                 bool hasValue = i + 1 < list.Count && !list[i + 1].StartsWith("--");
-                a._named[key] = hasValue && key is not ("fake-sim" or "fake-pilot") ? list[++i] : null;
+                a._named[key] = hasValue && key is not ("fake-sim" or "fake-pilot" or "dry-run") ? list[++i] : null;
             }
             return a;
         }

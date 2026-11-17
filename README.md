@@ -11,7 +11,7 @@ for the full plan.
 | 0. Toolchain | .NET 8 SDK installed. Still needed: Visual Studio 2022 Build Tools (C++), MSFS 2024 SDK |
 | 1. Core sync engine + chaos harness | **Done**: 10,000 randomized hostile-network sessions pass |
 | 2. SimConnect adapter + UDP transport + C172 definition | **Done.** Verified live against MSFS 2024: reads, plus remote writes (K-events) applied and read back in about 70 ms |
-| 3. WASM bridge (L-vars, per-frame edge detection) | Needs the MSFS 2024 SDK |
+| 3. In-sim bridge module (RPN/H-events, L-var name checks) | App side, protocol and installer **done and tested**, channel verified live in MSFS with a stand-in module. The C++ module is written but **not yet compiled**: that needs the MSFS 2024 SDK |
 | 4. Flight model slaving + control handover in the sim | |
 | 5. Var Recorder, A320neo/A321 definitions | |
 | 6. WPF UI, diagnostics, release | |
@@ -66,7 +66,36 @@ skylink lint definitions
 ```
 
 `skylink probe` shows which definition matched the loaded aircraft, the current value of every
-variable, and every name MSFS rejected. `skylink lint` validates the definition files.
+variable, every name MSFS rejected, and whether the bridge module is running. `skylink lint`
+validates the definition files.
+
+### The in-sim bridge module
+
+Some cockpit controls can only be driven from inside the sim: calculator code (RPN), H: events
+(G1000 bezels, many airliner buttons), multi-parameter K: events. The module also lists the
+L-vars that actually exist. External SimConnect can't do that, and it silently creates any
+L-var it's asked for, so a misspelled name in a definition would never sync and never complain.
+With the module installed, SkyLink holds back every L-var until the module confirms it exists,
+then reports the ones that never appear.
+
+1. Install the MSFS 2024 SDK (in MSFS: Options > General > Developers, turn on Developer Mode,
+   then Help > SDK Installer).
+2. Build the module:
+
+   ```bash
+   powershell -ExecutionPolicy Bypass -File wasm/build.ps1
+   ```
+
+3. Install it into MSFS's Community folder, then restart MSFS:
+
+   ```bash
+   skylink install-bridge
+   ```
+
+`install-bridge` finds the Community folder through MSFS's `UserCfg.opt` (Steam or Microsoft
+Store). It refuses to install an unbuilt package and never touches a `skylink-bridge` folder it
+didn't create. Use `--dry-run` to see what it would do. The protocol is in `wasm/PROTOCOL.md`.
+Without the module everything else still works, and SkyLink says what it can't check.
 
 SimConnect.dll is looked up in `SKYLINK_SIMCONNECT_DLL`, next to `skylink.exe`, and in the MSFS
 2024 SDK (`MSFS2024_SDK`).
@@ -87,8 +116,9 @@ Aircraft files `extends: common` and add, override or `remove: true` entries:
   capture: { kevent: AP_MASTER }                  # replayed exactly once on the other side
 ```
 
-Setters: `simvar`, `K:EVENT`, `{ kevent, param }`, `{ bevent }`, `{ inc, dec, step }`, `{ rpn }`
-(the last one needs the phase 3 bridge). A list gives an alternate setter for retries. Parameter
+Setters: `simvar`, `K:EVENT`, `{ kevent, param }`, `{ bevent }`, `{ inc, dec, step }`,
+`H:EVENT` / `{ hevent }` and `{ rpn: "{value} (>L:SOMETHING)" }`. The last two need the bridge
+module; `{value}` is replaced by the parameter. A list gives an alternate setter for retries. Parameter
 expressions use `value`, `+ - * /`, `round floor ceil abs bcd16 clamp16k`. Unknown keys, bad names,
 duplicates and missing setters are errors, and a definition with any error never loads.
 
@@ -98,7 +128,10 @@ duplicates and missing setters are errors, and a definition with any error never
 src/SkyLink.Core/          engine: Hlc, Schema, Messages, MessageCodec, SyncEngine (pure, no I/O)
 src/SkyLink.Definitions/   YAML loader, inheritance, linter, aircraft matching, param expressions
 src/SkyLink.Net/           LiteNetLib UDP link: session-code auth, HMAC, reconnect
-src/SkyLink.Sim/           SimConnect bridge (direct P/Invoke), fake cockpit, shared setter logic
+src/SkyLink.Sim/           SimConnect bridge (direct P/Invoke), fake cockpit, shared setter logic,
+                           bridge-module protocol client, Community-folder installer
+wasm/                      SkyLinkBridge C++ module, build script, PROTOCOL.md
+package/skylink-bridge/    MSFS package skeleton (manifest; the build adds the .wasm and layout.json)
 src/SkyLink.Session/       the single-threaded session loop
 src/SkyLink.Cli/           skylink.exe
 definitions/               aircraft definitions

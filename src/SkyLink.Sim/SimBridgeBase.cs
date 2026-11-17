@@ -207,7 +207,11 @@ public abstract class SimBridgeBase : ISimBridge
             }
 
             case SetterKind.Rpn:
-                ExecuteRpn(v, s.Target, value);
+                ExecuteRpn(v, s.Target.Replace("{value}", s.Param.Evaluate(value).ToString("R", System.Globalization.CultureInfo.InvariantCulture)));
+                break;
+
+            case SetterKind.HEvent:
+                ExecuteRpn(v, $"(>H:{s.Target})");
                 break;
         }
     }
@@ -223,6 +227,7 @@ public abstract class SimBridgeBase : ISimBridge
     protected abstract void TransmitKEvent(string name, uint data);
     protected abstract void SetInputEvent(string name, double value);
 
-    protected virtual void ExecuteRpn(int v, string code, double value) =>
-        WarnOnce("rpn:" + v, $"'{_definition!.Vars[v].Spec.Id}' uses an rpn setter, which needs the SkyLink in-sim bridge (phase 3); not written");
+    /// <summary>Run calculator code in the sim (needs the bridge module).</summary>
+    protected virtual void ExecuteRpn(int v, string code) =>
+        WarnOnce("rpn:" + v, $"'{_definition!.Vars[v].Spec.Id}' needs the SkyLink Bridge package (rpn/hevent); not written");
 }

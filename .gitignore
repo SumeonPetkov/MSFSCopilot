@@ -482,3 +482,7 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+
+# Built bridge module (produced by wasm/build.ps1)
+package/skylink-bridge/modules/
+package/skylink-bridge/layout.json
