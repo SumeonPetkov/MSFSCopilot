@@ -166,6 +166,24 @@ module; `{value}` is replaced by the parameter. A list gives an alternate setter
 expressions use `value`, `+ - * /`, `round floor ceil abs bcd16 clamp16k`. Unknown keys, bad names,
 duplicates and missing setters are errors, and a definition with any error never loads.
 
+## Releasing
+
+`.github/workflows/release.yml` runs the tests, builds a self-contained Windows package (no .NET
+install needed: `SkyLink.exe`, `cli\skylink.exe`, `definitions\`, `README.txt`), and publishes
+`SkyLink-<version>-win-x64.zip` on the repository's **Releases** tab. Start it either way:
+
+```bash
+git tag v0.1.0
+```
+
+```bash
+git push origin v0.1.0
+```
+
+or from GitHub: **Actions → Release → Run workflow** and enter a version. A version with a
+suffix, like `0.2.0-beta.1`, becomes a pre-release. `SimConnect.dll` is not bundled; the release
+notes and the zip's README tell pilots to copy it from the MSFS 2024 SDK.
+
 ## Layout
 
 ```
