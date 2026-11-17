@@ -16,6 +16,40 @@ public sealed record AddressItem(string Address, string Adapter);
 
 public sealed record SavedPeerItem(string Text, string Status, bool Found, IPEndPoint Endpoint);
 
+/// <summary>
+/// A row of the Flight card's aircraft list: an aircraft (shown by name and developer, keyed by its
+/// MSFS title) or, with <see cref="IsHeader"/>, the non-selectable developer heading above a group.
+/// </summary>
+public sealed record AircraftItem(string Title, string Name, string? Developer, string? Manufacturer, bool IsHeader = false)
+{
+    public const string UnknownDeveloper = "Other developers";
+
+    public static AircraftItem From(CatalogAircraft a) => new(a.Title, a.Name, a.Developer, a.Manufacturer);
+
+    /// <summary>The list in display order with a heading before each developer's aircraft.</summary>
+    public static IEnumerable<AircraftItem> Grouped(IEnumerable<CatalogAircraft> aircraft)
+    {
+        string? group = null;
+        foreach (var a in AircraftCatalog.ForDisplay(aircraft))
+        {
+            string g = a.Developer ?? UnknownDeveloper;
+            if (g != group) yield return new AircraftItem("", group = g, null, null, IsHeader: true);
+            yield return From(a);
+        }
+    }
+
+    /// <summary>What type-to-find matches; headings never match.</summary>
+    public string SearchText => IsHeader ? "" : Name;
+
+    public override string ToString() => Developer is null ? Name : $"{Name}, {Developer}";
+}
+
+/// <summary>A livery: shown by its readable name, keyed by the name MSFS uses.</summary>
+public sealed record LiveryItem(string Key, string Name)
+{
+    public override string ToString() => Name;
+}
+
 public sealed record PlayerItem(string Id, string Name, string Initial, string Status, string? PartyText, bool CanJoin, string Address, DiscoveredPlayer Source);
 
 /// <summary>
@@ -40,8 +74,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private List<CatalogAircraft>? _myCatalog;
 
     public ObservableCollection<PlayerItem> Players { get; } = [];
-    public ObservableCollection<string> Aircraft { get; } = [];
-    public ObservableCollection<string> Liveries { get; } = [];
+    /// <summary>Aircraft rows grouped by developer, with heading rows (see <see cref="AircraftItem.Grouped"/>).</summary>
+    public ObservableCollection<AircraftItem> Aircraft { get; } = [];
+    public ObservableCollection<LiveryItem> Liveries { get; } = [];
     public ObservableCollection<string> Log { get; } = [];
     public ObservableCollection<AddressItem> MyAddresses { get; } = [];
     public ObservableCollection<SavedPeerItem> SavedPeers { get; } = [];
@@ -142,7 +177,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _launch.Log += AddLog;
 
         _myCatalog = AircraftCatalog.LoadCache();
-        if (_myCatalog is not null) CatalogText = $"{_myCatalog.Count} aircraft installed";
+        if (_myCatalog is not null)
+        {
+            CatalogText = $"{_myCatalog.Count} aircraft installed";
+            if (_myCatalog.Any(a => a.Developer is null)) ResolveNames(_myCatalog); // cache from an older version
+        }
 
         _timer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(50) };
         _timer.Tick += (_, _) => Pump();
@@ -278,15 +317,15 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             CanTakeFirstOfficer = !IAmFirstOfficer;
             CanKick = _party.IsHost && s.Members.Count > 1;
 
-            if (s.CatalogVersion != _shownCatalog || Aircraft.Count != _party.SharedCatalog.Count)
+            if (s.CatalogVersion != _shownCatalog || AircraftCount != _party.SharedCatalog.Count)
             {
                 _shownCatalog = s.CatalogVersion;
                 Aircraft.Clear();
-                foreach (var a in _party.SharedCatalog) Aircraft.Add(a.Title);
+                foreach (var a in AircraftItem.Grouped(_party.SharedCatalog)) Aircraft.Add(a);
             }
             CatalogHint = s.Members.Count < 2 ? "Showing your aircraft. Once your co-pilot joins, only what you both have installed is listed."
-                : Aircraft.Count == 0 ? (s.Members.Any(m => m.CatalogCount == 0) ? "Waiting for your co-pilot's aircraft list. It's read when MSFS is open." : "You don't have any aircraft in common.")
-                : $"{Aircraft.Count} aircraft you both have";
+                : AircraftCount == 0 ? (s.Members.Any(m => m.CatalogCount == 0) ? "Waiting for your co-pilot's aircraft list. It's read when MSFS is open." : "You don't have any aircraft in common.")
+                : $"{AircraftCount} aircraft you both have";
 
             var setup = s.Setup;
             SelectedAircraft = setup.AircraftTitle;
@@ -402,6 +441,42 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         AircraftCatalog.SaveCache(_myCatalog);
         CatalogText = $"{_myCatalog.Count} aircraft installed";
         PublishCatalog();
+        ResolveNames(_myCatalog);
+    }
+
+    private int _resolveRun;
+
+    /// <summary>
+    /// Look up names and developers in the installed MSFS packages (off the UI thread; reads files
+    /// only), then cache and publish the named list. Until then the plain titles are shown.
+    /// </summary>
+    private void ResolveNames(List<CatalogAircraft> catalog)
+    {
+        int run = ++_resolveRun;
+        Task.Run(() =>
+        {
+            AircraftNames names;
+            List<CatalogAircraft> named;
+            try
+            {
+                names = AircraftNames.FromThisPc();
+                named = names.Apply(catalog);
+            }
+            catch (Exception e)
+            {
+                Ui(() => AddLog($"Could not read aircraft names from the MSFS packages: {e.Message}"));
+                return;
+            }
+            Ui(() =>
+            {
+                if (run != _resolveRun) return; // a newer list arrived meanwhile
+                _myCatalog = named;
+                AircraftCatalog.SaveCache(named);
+                int known = named.Count(a => a.Developer is not null);
+                AddLog($"Aircraft names: {known} of {named.Count} matched to a developer ({names.PackageCount} packages, {names.ExactCount} exact titles read)");
+                PublishCatalog();
+            });
+        });
     }
 
     private void PublishCatalog()
@@ -411,17 +486,24 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private void FillLiveries(string? title)
     {
-        var liveries = _party?.SharedCatalog.FirstOrDefault(a => a.Title == title)?.Liveries ?? [];
-        if (Liveries.SequenceEqual(liveries)) return;
+        var keys = _party?.SharedCatalog.FirstOrDefault(a => a.Title == title)?.Liveries ?? [];
+        var names = keys.Select(AircraftNames.LiveryDisplay).ToList();
+        // Two liveries that read the same keep their MSFS names apart.
+        var items = keys.Select((k, i) => new LiveryItem(k, names.Count(n => n.Equals(names[i], StringComparison.OrdinalIgnoreCase)) > 1 && names[i] != k ? $"{names[i]} ({k})" : names[i]))
+            .OrderBy(l => l.Name != AircraftCatalog.DefaultLivery).ThenBy(l => l.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (Liveries.SequenceEqual(items)) return;
         Liveries.Clear();
-        foreach (var l in liveries) Liveries.Add(l);
+        foreach (var l in items) Liveries.Add(l);
     }
+
+    private int AircraftCount => Aircraft.Count(a => !a.IsHeader);
 
     partial void OnSelectedAircraftChanged(string? value)
     {
-        if (_applying || value is null || _party is null) return;
+        if (_applying || string.IsNullOrEmpty(value) || _party is null) return;
         FillLiveries(value);
-        string livery = Liveries.Contains(SelectedLivery ?? "") ? SelectedLivery! : Liveries.FirstOrDefault() ?? "";
+        string livery = Liveries.Any(l => l.Key == SelectedLivery) ? SelectedLivery! : Liveries.FirstOrDefault()?.Key ?? "";
         _party.Send(new SetAircraft(value, livery));
     }
 

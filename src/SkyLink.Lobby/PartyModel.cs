@@ -6,8 +6,21 @@ public enum Seat { None, Captain, FirstOfficer }
 
 public enum PartyPhase { Lobby, Launching, InFlight }
 
-/// <summary>One installed aircraft and the liveries installed for it, on one PC.</summary>
-public sealed record CatalogAircraft(string Title, List<string> Liveries);
+/// <summary>
+/// One installed aircraft and the liveries installed for it, on one PC. <see cref="Title"/> and the
+/// livery names are what MSFS uses (the matching keys); the rest is only for showing it nicely and
+/// may be missing (older SkyLink versions, or nothing readable about the aircraft on disk).
+/// </summary>
+public sealed record CatalogAircraft(
+    string Title,
+    List<string> Liveries,
+    string? DisplayName = null,
+    string? Developer = null,
+    string? Manufacturer = null)
+{
+    /// <summary>The name to show: the resolved display name, else a cleaned-up title.</summary>
+    [JsonIgnore] public string Name => DisplayName ?? AircraftNames.CleanTitle(Title);
+}
 
 public sealed record MemberInfo(
     string Id,
