@@ -18,6 +18,7 @@ public static class Program
           skylink probe [--seconds N] [--defs DIR]      check what the loaded aircraft exposes
           skylink lint [DIR]                            validate aircraft definitions
           skylink install-bridge [--dry-run]            install the in-sim bridge module into MSFS
+          skylink watch [--seconds N]                   print every cockpit event SkyLink catches (e.g. ATC replies)
 
         options:
           --defs DIR         definitions folder (default: the one shipped with SkyLink)
@@ -44,6 +45,7 @@ public static class Program
                 "lint" => Lint(a.Positional.FirstOrDefault() ?? a.Get("defs") ?? FindDefinitions()),
                 "probe" => Probe(a),
                 "install-bridge" => InstallBridge(a),
+                "watch" => Watch(a),
                 "host" => RunSession(a, host: true),
                 "join" => RunSession(a, host: false),
                 _ => Fail($"unknown command '{args[0]}'\n\n{Usage}"),
@@ -216,6 +218,35 @@ public static class Program
         foreach (var i in catalog.Issues.Where(i => i.IsError)) Console.WriteLine(i);
         if (catalog.Aircraft.Count == 0) throw new ArgumentException($"no usable aircraft definitions in {dir}");
         return catalog;
+    }
+
+    /// <summary>
+    /// Live check: prints each synced event as MSFS reports it, e.g. to confirm that clicking an
+    /// ATC reply (not just pressing its number key) is seen and would be mirrored.
+    /// </summary>
+    private static int Watch(Args a)
+    {
+        var catalog = LoadCatalog(a);
+        int seconds = a.GetInt("seconds") ?? 120;
+        using var bridge = new SimConnectBridge(catalog);
+        int seen = 0;
+        bridge.Log += m => Console.WriteLine("  " + m);
+        bridge.EventCaptured += (b, p) =>
+        {
+            seen++;
+            Console.WriteLine($"{DateTime.Now:HH:mm:ss}  {b.Spec.Id,-18} {b.Capture!.Kind}:{b.Capture.Name}{(p != 0 ? $" ({p})" : "")}");
+        };
+        Console.WriteLine($"Watching for {seconds} s. Press buttons in the cockpit, or open the ATC window and pick replies (click them, then try the number keys).");
+        var end = DateTime.UtcNow.AddSeconds(seconds);
+        long start = Environment.TickCount64;
+        while (DateTime.UtcNow < end)
+        {
+            bridge.Pump(Environment.TickCount64 - start + 1);
+            bridge.DataAvailable.WaitOne(20);
+        }
+        Console.WriteLine($"{seen} event(s) caught.");
+        foreach (var p in bridge.Problems) Console.WriteLine("PROBLEM: " + p);
+        return 0;
     }
 
     private static int InstallBridge(Args a)

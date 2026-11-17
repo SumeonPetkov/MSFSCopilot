@@ -1,4 +1,5 @@
 using SkyLink.Core;
+using SkyLink.Definitions;
 
 namespace SkyLink.Sim;
 
@@ -14,6 +15,12 @@ public interface IFlightSim : ISimBridge
 
     /// <summary>Raised (on the sim thread) with every installed aircraft title and livery.</summary>
     event Action<List<(string Title, string Livery)>>? AircraftCatalog;
+
+    /// <summary>The local pilot triggered a synced event (sim thread).</summary>
+    event Action<VarBinding, double>? EventCaptured;
+
+    /// <summary>The other pilot's event was replayed into this sim (sim thread).</summary>
+    event Action<VarBinding, double>? EventReplayed;
 
     bool RequestAircraftCatalog();
     bool LoadFlight(string fltPath);

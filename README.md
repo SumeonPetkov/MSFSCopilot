@@ -11,7 +11,7 @@ for the full plan.
 | 0. Toolchain | .NET 8 SDK installed. Still needed: Visual Studio 2022 Build Tools (C++), MSFS 2024 SDK |
 | 1. Core sync engine + chaos harness | **Done**: 10,000 randomized hostile-network sessions pass |
 | 2. SimConnect adapter + UDP transport + C172 definition | **Done.** Verified live against MSFS 2024: reads, plus remote writes (K-events) applied and read back in about 70 ms |
-| 3. In-sim bridge module (RPN/H-events, L-var name checks) | App side, protocol and installer **done and tested**, channel verified live in MSFS with a stand-in module. The C++ module is written but **not yet compiled**: that needs the MSFS 2024 SDK |
+| 3. In-sim bridge module (RPN/H-events, L-var name checks) | **Built** with the MSFS 2024 SDK (`wasm/build.ps1`, 33 KB); SimConnect constants and message layouts verified against the SDK header. Not yet loaded in the live sim |
 | 4. Flight model slaving + control handover in the sim | **Done and tested** in simulation (1,000 randomized shared flights) and over real UDP. Not yet run against the live sim, which needs MSFS running |
 | 5. Var Recorder, A320neo/A321 definitions | |
 | 6. Desktop app | **Party lobby done** (discovery, Captain/FO seats, shared flight setup, SimBrief, one-click start), tested with fake sims. Not yet run against real MSFS. Sync Health panel, diagnostics and release still to do |
@@ -96,6 +96,9 @@ streamed velocities, and short gaps are bridged by extrapolating up to 0.5 s.
 - **If the link drops:** the monitoring aircraft extrapolates for 0.5 s, then holds. Pressing `t`
   releases it and you fly on your own. If both pilots took the controls during an outage, the
   later takeover wins when the link returns, and the other aircraft eases onto it.
+- **ATC answers are shared.** When either pilot opens the ATC menu or picks a reply, the other
+  pilot's ATC gets exactly the same action, once and in order. Both ATCs stay in the same
+  conversation and give the same response, and SkyLink shows "Alex answered ATC with reply 2".
 - **SkyLink never leaves your aircraft frozen.** It unfreezes on exit, and whenever MSFS
   disconnects.
 
@@ -109,8 +112,14 @@ skylink probe
 skylink lint definitions
 ```
 
+```bash
+skylink watch
+```
+
 `skylink probe` shows which definition matched the loaded aircraft, the current value of every
-variable, every name MSFS rejected, and whether the bridge module is running. `skylink lint`
+variable, every name MSFS rejected, and whether the bridge module is running. `skylink watch`
+prints every cockpit event SkyLink catches as it happens, for example to confirm that clicking an
+ATC reply in MSFS is seen. `skylink lint`
 validates the definition files.
 
 ### The in-sim bridge module
@@ -181,8 +190,10 @@ git push origin v0.1.0
 ```
 
 or from GitHub: **Actions → Release → Run workflow** and enter a version. A version with a
-suffix, like `0.2.0-beta.1`, becomes a pre-release. `SimConnect.dll` is not bundled; the release
-notes and the zip's README tell pilots to copy it from the MSFS 2024 SDK.
+suffix, like `0.2.0-beta.1`, becomes a pre-release.
+
+Releases include Microsoft's `SimConnect.dll` (MSFS 2024 SDK 1.8.2, kept in
+`third_party/SimConnect/` with its hash) next to both executables, so pilots don't have to find it.
 
 ## Layout
 

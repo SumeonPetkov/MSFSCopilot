@@ -7,8 +7,8 @@ Needs Windows 10/11 (64-bit) and MSFS 2024. Nothing else to install.
 BEFORE THE FIRST FLIGHT
 -----------------------
 1. SimConnect.dll
-   Copy SimConnect.dll into this folder, next to SkyLink.exe.
-   It comes with the MSFS 2024 SDK:  <SDK folder>\SimConnect SDK\lib\SimConnect.dll
+   SkyLink needs SimConnect.dll next to SkyLink.exe. If this folder doesn't already have it,
+   copy it from the MSFS 2024 SDK:  <SDK folder>\SimConnect SDK\lib\SimConnect.dll
    (In MSFS: Options > General > Developers > Developer Mode, then Help > SDK Installer.)
 
 2. Firewall

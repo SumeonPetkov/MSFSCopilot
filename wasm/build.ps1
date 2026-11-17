@@ -9,8 +9,10 @@ $ErrorActionPreference = 'Stop'
 
 $sdk = $env:MSFS2024_SDK
 if (-not $sdk) { $sdk = 'C:\MSFS 2024 SDK' }
-$clang = Join-Path $sdk 'WASM\llvm\bin\clang++.exe'
+# The SDK ships clang as clang-cl.exe; --driver-mode=g++ makes it behave like clang++.
+$clang = Join-Path $sdk 'WASM\llvm\bin\clang-cl.exe'
 if (-not (Test-Path $clang)) { throw "MSFS 2024 SDK WASM toolchain not found at $clang (set MSFS2024_SDK)." }
+$versions = Join-Path $sdk 'WASM\WasmVersions\MSFS_WasmVersions.a'
 
 $root = Split-Path -Parent $PSScriptRoot
 $src = Join-Path $PSScriptRoot 'SkyLinkBridge'
@@ -19,6 +21,7 @@ $out = Join-Path $pkg 'modules\SkyLinkBridge.wasm'
 New-Item -ItemType Directory -Force (Split-Path $out) | Out-Null
 
 $flags = @(
+  '--driver-mode=g++',
   '--target=wasm32-unknown-wasi',
   "--sysroot=$(Join-Path $sdk 'WASM\wasi-sysroot')",
   "-I$(Join-Path $sdk 'WASM\include')",
@@ -34,6 +37,12 @@ $flags = @(
   '-Wl,--export=module_init', '-Wl,--export=module_deinit',
   '-o', $out, (Join-Path $src 'Module.cpp')
 )
+# The SDK keeps clang's runtime in the sysroot rather than clang's own folder: link the C/C++
+# libraries explicitly, and skip the default start-up code (a sim module has no main()).
+$libs = Join-Path $sdk 'WASM\wasi-sysroot\lib\wasm32-wasi'
+$flags += @('-nostartfiles', '-nodefaultlibs', "-L$libs", '-lc++', '-lc++abi', '-lc',
+            (Join-Path $libs 'libclang_rt.builtins-wasm32.a'))
+if (Test-Path $versions) { $flags += $versions }
 & $clang @flags
 if ($LASTEXITCODE -ne 0) { throw "clang failed ($LASTEXITCODE)" }
 Write-Host "built $out ($((Get-Item $out).Length) bytes)"

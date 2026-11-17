@@ -98,3 +98,22 @@ groups:
       - { id: ap_hdg_mode, class: derived, read: "A:AUTOPILOT HEADING LOCK, Bool",     epsilon: 0.5 }
       - { id: ap_nav_mode, class: derived, read: "A:AUTOPILOT NAV1 LOCK, Bool",        epsilon: 0.5 }
       - { id: ap_alt_mode, class: derived, read: "A:AUTOPILOT ALTITUDE LOCK, Bool",    epsilon: 0.5 }
+
+  # ATC: whichever pilot answers, the other pilot's ATC gets the same answer (exactly once, in
+  # order), so both ATCs stay in the same conversation and give the same response. Opening and
+  # closing the ATC menu is mirrored too, so the reply always lands in an open menu.
+  - id: atc
+    order: 95
+    vars:
+      - { id: atc_menu_open,  class: event, capture: { kevent: ATC_MENU_OPEN } }
+      - { id: atc_menu_close, class: event, capture: { kevent: ATC_MENU_CLOSE } }
+      - { id: atc_reply_1,    class: event, capture: { kevent: ATC_MENU_1 } }
+      - { id: atc_reply_2,    class: event, capture: { kevent: ATC_MENU_2 } }
+      - { id: atc_reply_3,    class: event, capture: { kevent: ATC_MENU_3 } }
+      - { id: atc_reply_4,    class: event, capture: { kevent: ATC_MENU_4 } }
+      - { id: atc_reply_5,    class: event, capture: { kevent: ATC_MENU_5 } }
+      - { id: atc_reply_6,    class: event, capture: { kevent: ATC_MENU_6 } }
+      - { id: atc_reply_7,    class: event, capture: { kevent: ATC_MENU_7 } }
+      - { id: atc_reply_8,    class: event, capture: { kevent: ATC_MENU_8 } }
+      - { id: atc_reply_9,    class: event, capture: { kevent: ATC_MENU_9 } }
+      - { id: atc_reply_10,   class: event, capture: { kevent: ATC_MENU_0 } }

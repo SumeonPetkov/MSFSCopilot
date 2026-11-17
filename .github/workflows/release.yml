@@ -73,11 +73,21 @@ jobs:
           Compress-Archive -Path out/SkyLink/* -DestinationPath "out/SkyLink-$env:VERSION-win-x64.zip"
 
       - name: Check the package
+        id: check
         shell: pwsh
         run: |
           & out/SkyLink/cli/skylink.exe lint
           if ($LASTEXITCODE -ne 0) { throw 'the packaged aircraft definitions do not pass lint' }
           if (-not (Test-Path out/SkyLink/SkyLink.exe)) { throw 'SkyLink.exe is missing from the package' }
+          # SimConnect.dll ships when third_party/SimConnect holds the official SDK copy.
+          if (Test-Path third_party/SimConnect/SimConnect.dll) {
+            foreach ($p in 'out/SkyLink/SimConnect.dll', 'out/SkyLink/cli/SimConnect.dll') {
+              if (-not (Test-Path $p)) { throw "$p is missing although third_party/SimConnect/SimConnect.dll exists" }
+            }
+            "simconnect=SimConnect.dll is included." >> $env:GITHUB_OUTPUT
+          } else {
+            "simconnect=Put **SimConnect.dll** next to ``SkyLink.exe``. It comes with the MSFS 2024 SDK (``SimConnect SDK\lib\SimConnect.dll``)." >> $env:GITHUB_OUTPUT
+          }
 
       - name: Publish the release
         uses: softprops/action-gh-release@v2
@@ -95,7 +105,7 @@ jobs:
             **SkyLink-${{ steps.ver.outputs.version }}-win-x64.zip**: unzip anywhere and run `SkyLink.exe`. No .NET install needed (Windows 10/11, 64-bit).
 
             Before the first flight:
-            1. Put **SimConnect.dll** next to `SkyLink.exe`. It comes with the MSFS 2024 SDK (`SimConnect SDK\lib\SimConnect.dll`).
+            1. ${{ steps.check.outputs.simconnect }}
             2. When Windows Firewall asks, allow SkyLink on **both** private and public networks (UDP 47800–47802).
 
             The zip's `README.txt` has the full quick start.

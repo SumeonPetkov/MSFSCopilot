@@ -28,4 +28,10 @@
     <None Include="..\..\definitions\**\*.yaml" Link="definitions\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
+  <!-- Microsoft's SimConnect.dll from the MSFS 2024 SDK, shipped next to the exe when present (see third_party/SimConnect). -->
+  <ItemGroup Condition="Exists('$(MSBuildThisFileDirectory)..\..\third_party\SimConnect\SimConnect.dll')">
+    <None Include="$(MSBuildThisFileDirectory)..\..\third_party\SimConnect\SimConnect.dll" Link="SimConnect.dll"
+          CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+  </ItemGroup>
+
 </Project>

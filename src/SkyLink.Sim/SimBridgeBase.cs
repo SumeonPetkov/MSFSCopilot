@@ -59,6 +59,12 @@ public abstract class SimBridgeBase : ISimBridge
     public virtual WaitHandle? DataAvailable => null;
     public event Action<string>? Log;
 
+    /// <summary>The local pilot triggered a synced event (raised on the sim thread).</summary>
+    public event Action<VarBinding, double>? EventCaptured;
+
+    /// <summary>The other pilot's event was replayed into this sim (raised on the sim thread).</summary>
+    public event Action<VarBinding, double>? EventReplayed;
+
     public abstract void Pump(long now);
     public abstract void Dispose();
 
@@ -117,6 +123,7 @@ public abstract class SimBridgeBase : ISimBridge
             return;
         }
         _capturedEvents.Add((v, param));
+        if (_definition is not null) EventCaptured?.Invoke(_definition.Vars[v], param);
     }
 
     public void Feed(SyncEngine engine, long now)
@@ -198,6 +205,7 @@ public abstract class SimBridgeBase : ISimBridge
         if (b.Write.Count == 0) return;
         _echoLedger.Add((v, param, now + EchoTtlMs));
         Apply(v, b, b.Write[0], param, now, isEvent: true);
+        EventReplayed?.Invoke(b, param);
     }
 
     private void Apply(int v, VarBinding b, Setter s, double value, long now, bool isEvent)

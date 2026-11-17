@@ -104,6 +104,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty] private string _myStage = "";
     [ObservableProperty] private string _sessionText = "";
     [ObservableProperty] private string _controlsText = "";
+    [ObservableProperty] private string _lastAtc = "";
     [ObservableProperty] private string? _message;
     [ObservableProperty] private bool _messageIsError;
 
@@ -129,6 +130,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _sim = new SimHost(sim);
         _sim.Log += m => Ui(() => AddLog(m));
         sim.AircraftCatalog += list => Ui(() => OnCatalog(list));
+        sim.EventCaptured += (b, _) => Ui(() => OnAtc(b, mine: true));
+        sim.EventReplayed += (b, _) => Ui(() => OnAtc(b, mine: false));
         _sim.Start();
 
         _discovery = new Discovery(_settings.PlayerId, beaconPort, devPeers) { CurrentBeacon = MakeBeacon };
@@ -352,6 +355,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         string stage = LaunchCoordinator.Describe(_launch.Stage);
         MyStage = _launch.Stage == LaunchStage.Failed ? $"Launch failed: {_launch.Error}" : char.ToUpperInvariant(stage[0]) + stage[1..];
+        if (_sim.Session is null) LastAtc = "";
         if (_sim.Session is { } st)
         {
             string sync = st.Incompatible is { } inc ? "Not compatible: " + inc : !st.Established ? "Connecting" : st.InitialSync ? "Syncing the cockpits" : "Cockpits in sync";
@@ -364,6 +368,31 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             ControlsText = "";
         }
     }
+
+    // ------------------------------------------------------------------ ATC
+
+    /// <summary>"answered ATC with reply 2", "opened the ATC menu"... or null for non-ATC events.</summary>
+    public static string? DescribeAtc(string id) => id switch
+    {
+        "atc_menu_open" => "opened the ATC menu",
+        "atc_menu_close" => "closed the ATC menu",
+        _ when id.StartsWith("atc_reply_", StringComparison.Ordinal) => $"answered ATC with reply {id["atc_reply_".Length..]}",
+        _ => null,
+    };
+
+    /// <summary>Both pilots' ATC answers are mirrored; tell this pilot when the other one answered.</summary>
+    private void OnAtc(VarBinding b, bool mine)
+    {
+        if (DescribeAtc(b.Spec.Id) is not { } what) return;
+        string who = mine ? "You" : CoPilotName();
+        bool reply = b.Spec.Id.StartsWith("atc_reply_", StringComparison.Ordinal);
+        if (reply) LastAtc = $"{who} {what} at {DateTime.Now:HH:mm}";
+        if (!mine && reply) Show($"{who} {what}. Your ATC got the same answer.", error: false);
+        else AddLog($"{who} {what}");
+    }
+
+    private string CoPilotName() =>
+        _party?.State?.Members.FirstOrDefault(m => m.Id != _settings.PlayerId)?.Name ?? "Your co-pilot";
 
     // ------------------------------------------------------------------ catalog
 

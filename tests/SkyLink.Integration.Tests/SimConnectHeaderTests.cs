@@ -26,7 +26,9 @@ public sealed class SimConnectHeaderTests(ITestOutputHelper output)
     /// <summary>Values of a C enum: sequential unless assigned explicitly.</summary>
     private static Dictionary<string, long> Enum(string header, string name)
     {
-        var m = Regex.Match(header, @"enum\s+" + name + @"\s*\{(?<body>.*?)\}", RegexOptions.Singleline);
+        // The SDK header declares enums through a macro, sometimes with an underlying type:
+        // SIMCONNECT_ENUM NAME { ... };  or  SIMCONNECT_ENUM NAME:int { ... };
+        var m = Regex.Match(header, @"(?:\benum|\bSIMCONNECT_ENUM(?:_FLAGS)?)\s+" + name + @"\s*(?::\s*\w+\s*)?\{(?<body>.*?)\}", RegexOptions.Singleline);
         Assert.True(m.Success, $"enum {name} not found in SimConnect.h");
         var result = new Dictionary<string, long>();
         long next = 0;
