@@ -277,7 +277,7 @@ public sealed class Link : IDisposable
         return CryptographicOperations.FixedTimeEquals(expected, data.AsSpan(data.Length - TagLength));
     }
 
-    /// <summary>Local addresses worth telling the other pilot (LAN, Tailscale 100.x, ZeroTier, Radmin 26.x).</summary>
+    /// <summary>This PC's IPv4 addresses (with the network adapter name), to tell the other pilot.</summary>
     public static IEnumerable<string> LocalAddresses()
     {
         foreach (var ni in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())

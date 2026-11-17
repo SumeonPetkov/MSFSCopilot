@@ -103,7 +103,7 @@ public sealed class PartyFlowTests(ITestOutputHelper output)
         a.Party = PartyNode.Host(a.Me, "Saturday flight", partyPort);
         Assert.True(RunUntil(() => b.Discovery.Players.Any(p => p.Beacon.Id == "pilot-a" && p.CanJoin), 8000, a, b), "B never saw A's party");
         var found = b.Discovery.Players.Single(p => p.Beacon.Id == "pilot-a");
-        output.WriteLine($"B sees {found.Beacon.Name} via {found.Via} at {found.Address}, party '{found.Beacon.Party!.Name}'");
+        output.WriteLine($"B sees {found.Beacon.Name} at {found.Address}, party '{found.Beacon.Party!.Name}'");
 
         // 2) Join.
         b.Party = PartyNode.Join(b.Me, found.Address, found.Beacon.Party.Port, found.Beacon.Party.Id);

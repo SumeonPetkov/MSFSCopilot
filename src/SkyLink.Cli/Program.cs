@@ -149,7 +149,7 @@ public static class Program
         {
             link = Link.Host(options);
             Console.WriteLine($"Hosting on UDP port {options.Port}. Session code: {Link.NormalizeCode(code)}");
-            Console.WriteLine("Give the other pilot one of these addresses (Tailscale = 100.x, ZeroTier, Radmin = 26.x, or your public IP with the port forwarded):");
+            Console.WriteLine("Give the other pilot one of these addresses (or your public IP with the port forwarded):");
             foreach (var addr in Link.LocalAddresses()) Console.WriteLine("  " + addr);
         }
         else

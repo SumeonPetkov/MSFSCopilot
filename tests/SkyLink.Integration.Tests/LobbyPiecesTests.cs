@@ -69,24 +69,6 @@ public sealed class LobbyPiecesTests
     }
 
     [Fact]
-    public void Tailscale_status_gives_online_ipv4_peers_only()
-    {
-        const string json = """
-            {
-              "Self": { "HostName": "simeon-pc", "TailscaleIPs": ["100.101.1.1", "fd7a:115c:a1e0::1"] },
-              "Peer": {
-                "nodekey:a": { "HostName": "alex-pc", "Online": true, "TailscaleIPs": ["100.101.2.2", "fd7a:115c:a1e0::2"] },
-                "nodekey:b": { "HostName": "old-laptop", "Online": false, "TailscaleIPs": ["100.101.3.3"] }
-              }
-            }
-            """;
-        var (self, peers) = Discovery.ParseTailscaleStatus(json);
-        Assert.Equal("100.101.1.1", self!.ToString());
-        var peer = Assert.Single(peers);
-        Assert.Equal(("100.101.2.2", "alex-pc"), (peer.Ip.ToString(), peer.Host));
-    }
-
-    [Fact]
     public void Catalog_groups_liveries_and_names_the_unnamed_one_default()
     {
         var g = AircraftCatalog.Group([("A320neo V2", "Lufthansa"), ("A320neo V2", ""), ("A320neo V2", "Lufthansa"), ("Cessna 172", "White")]);

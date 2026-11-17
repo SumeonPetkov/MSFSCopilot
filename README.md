@@ -36,9 +36,11 @@ for the full plan.
 
 ## The desktop app (`SkyLink.exe`)
 
-1. **Find each other.** Everyone running SkyLink on your LAN, or on your Tailscale tailnet, shows
-   up under *Players nearby*. Tailscale peers come from `tailscale status`; ZeroTier and Radmin
-   networks are reached by broadcast. Anyone else can be added by IP.
+1. **Add your co-pilot by IP.** The app shows *Your address* with a copy button. Send it to your
+   co-pilot, or type theirs under *Add your co-pilot*. Adding on one side is enough: SkyLink
+   answers whoever contacts it, so both of you see each other under *Pilots*. Saved addresses
+   are remembered and show who answered. Nothing is broadcast or scanned. Use any route between
+   the PCs (LAN, a VPN, or a forwarded port).
 2. **Party.** One pilot clicks *Create party* and the other clicks *Join*. A party is exactly two
    pilots: **Captain** (left seat) and **First Officer** (right seat). Either pilot can take the
    other seat or swap at any time, including in flight. A swap changes who is Captain/FO, not
@@ -55,7 +57,7 @@ for the full plan.
    follows. Both screens show both pilots' progress. Without a SimBrief plan, the flight starts
    where the Captain's aircraft is in MSFS right now.
 
-Ports: UDP 47801 discovery, 47802 party, 47800 cockpit link. The party host keeps the
+Ports: UDP 47801 finding each other, 47802 party, 47800 cockpit link. The party host keeps the
 authoritative party state and resends it every 2 s, so both screens always converge.
 
 ## Flying with it (CLI)
@@ -70,11 +72,11 @@ skylink code
 skylink host --code K7PM2X
 ```
 
-The other pilot joins. With Tailscale or ZeroTier use the host's 100.x / VPN address; without a
-VPN the host must forward UDP 47800:
+The other pilot joins with the host's IP address. Over the internet, either use a VPN between
+the PCs or have the host forward UDP 47800:
 
 ```bash
-skylink join 100.64.12.34 --code K7PM2X
+skylink join 203.0.113.7 --code K7PM2X
 ```
 
 Keys while running: `r` request controls, `t` take controls, `g` give controls, `q` quit.

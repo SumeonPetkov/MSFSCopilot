@@ -12,7 +12,11 @@ using SkyLink.Sim;
 
 namespace SkyLink.App;
 
-public sealed record PlayerItem(string Id, string Name, string Detail, string PartyText, bool CanJoin, DiscoveredPlayer Source);
+public sealed record AddressItem(string Address, string Adapter);
+
+public sealed record SavedPeerItem(string Text, string Status, bool Found, IPEndPoint Endpoint);
+
+public sealed record PlayerItem(string Id, string Name, string Initial, string Status, string? PartyText, bool CanJoin, string Address, DiscoveredPlayer Source);
 
 /// <summary>
 /// Everything the window shows. A 50 ms timer pumps discovery, the party and the launch
@@ -39,13 +43,17 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public ObservableCollection<string> Aircraft { get; } = [];
     public ObservableCollection<string> Liveries { get; } = [];
     public ObservableCollection<string> Log { get; } = [];
+    public ObservableCollection<AddressItem> MyAddresses { get; } = [];
+    public ObservableCollection<SavedPeerItem> SavedPeers { get; } = [];
+    private readonly Dictionary<string, IPEndPoint> _saved = [];
 
     // ---- you
     [ObservableProperty] private string _playerName;
-    [ObservableProperty] private string _networkText = "";
-    [ObservableProperty] private string _simText = "MSFS: not running";
+    [ObservableProperty] private string _myInitial = "?";
+    [ObservableProperty] private string _simStatusTitle = "MSFS not running";
+    [ObservableProperty] private string _simStatusDetail = "";
     [ObservableProperty] private bool _simConnected;
-    [ObservableProperty] private string _catalogText = "aircraft list: not read yet";
+    [ObservableProperty] private string _catalogText = "Aircraft list not read yet";
     [ObservableProperty] private string _manualAddress = "";
 
     // ---- party
@@ -54,6 +62,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty] private string _partyName = "";
     [ObservableProperty] private string _partyRole = "";
     [ObservableProperty] private bool _isPartyHost;
+    [ObservableProperty] private string _captainInitial = "";
+    [ObservableProperty] private string _firstOfficerInitial = "";
     [ObservableProperty] private string _captainName = "empty";
     [ObservableProperty] private string _captainStatus = "";
     [ObservableProperty] private string _firstOfficerName = "empty";
@@ -71,8 +81,15 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty] private string _airlineCallsign = "";
     [ObservableProperty] private string _flightNumber = "";
     [ObservableProperty] private string _simBriefUser = "";
-    [ObservableProperty] private string _planSummary = "No flight plan. Import one from SimBrief, or the flight starts where the Captain's aircraft is.";
     [ObservableProperty] private bool _hasPlan;
+    [ObservableProperty] private bool _noPlan = true;
+    [ObservableProperty] private string _planOrigin = "";
+    [ObservableProperty] private string _planDestination = "";
+    [ObservableProperty] private string _planOriginName = "";
+    [ObservableProperty] private string _planDestinationName = "";
+    [ObservableProperty] private string _planFacts = "";
+    [ObservableProperty] private string _planRoute = "";
+    [ObservableProperty] private string _planBy = "";
     [ObservableProperty] private string _editedBy = "";
     [ObservableProperty] private bool _setupEditable;
     [ObservableProperty] private string _catalogHint = "";
@@ -94,6 +111,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         _settings = AppSettings.Load();
         _playerName = _settings.PlayerName;
+        _myInitial = Initial(_playerName);
         _simBriefUser = _settings.SimBriefUser ?? "";
         if (_settings.SimConnectDll is { Length: > 0 } dll) Environment.SetEnvironmentVariable("SKYLINK_SIMCONNECT_DLL", dll);
 
@@ -121,12 +139,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _launch.Log += AddLog;
 
         _myCatalog = AircraftCatalog.LoadCache();
-        if (_myCatalog is not null) CatalogText = $"aircraft list: {_myCatalog.Count} aircraft (saved)";
+        if (_myCatalog is not null) CatalogText = $"{_myCatalog.Count} aircraft installed";
 
         _timer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(50) };
         _timer.Tick += (_, _) => Pump();
         _timer.Start();
-        AddLog($"SkyLink ready. You are '{PlayerName}'. Looking for players on UDP {beaconPort}.");
+        AddLog($"SkyLink ready. Looking for other pilots (UDP {beaconPort}).");
     }
 
     private static void Ui(Action a) => Application.Current?.Dispatcher.BeginInvoke(a);
@@ -134,6 +152,27 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     // ------------------------------------------------------------------ loop
 
     private long _lastSlow;
+    private long _lastAddresses = long.MinValue / 2;
+
+    /// <summary>Hyper-V/WSL, VMware and VirtualBox host adapters: never reachable by a co-pilot.</summary>
+    private static bool IsVirtualAdapter(string name) =>
+        new[] { "vEthernet", "VMware", "VirtualBox", "WSL", "Loopback" }.Any(v => name.Contains(v, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>This PC's IPv4 addresses, for telling the co-pilot what to type.</summary>
+    private void RefreshMyAddresses()
+    {
+        var list = Net.Link.LocalAddresses()
+            .Select(a =>
+            {
+                int paren = a.IndexOf(" (", StringComparison.Ordinal);
+                return paren < 0 ? new AddressItem(a, "") : new AddressItem(a[..paren], a[(paren + 2)..].TrimEnd(')'));
+            })
+            .Where(a => !a.Address.StartsWith("169.254.", StringComparison.Ordinal) && !IsVirtualAdapter(a.Adapter))
+            .ToList();
+        if (list.SequenceEqual(MyAddresses)) return;
+        MyAddresses.Clear();
+        foreach (var a in list) MyAddresses.Add(a);
+    }
 
     private void Pump()
     {
@@ -142,11 +181,18 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _party?.Poll(now);
         if (_party is not null) _launch.Tick(_party);
 
+        if (now - _lastAddresses >= 10_000)
+        {
+            _lastAddresses = now;
+            RefreshMyAddresses();
+        }
         if (now - _lastSlow >= 250)
         {
             _lastSlow = now;
             RefreshSim();
             RefreshFlight();
+            // Confirmations fade away by themselves; errors stay until dismissed.
+            if (Message is not null && !MessageIsError && DateTime.UtcNow - _messageAt > TimeSpan.FromSeconds(6)) Message = null;
         }
         if (_party?.State is { } s && (s.Version != _shownVersion || s.CatalogVersion != _shownCatalog)) RefreshParty(s);
     }
@@ -164,10 +210,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         var s = _sim.Current;
         SimConnected = s.Connected;
-        SimText = !s.Connected ? $"MSFS: {s.Status}"
-            : s.InFlight ? $"MSFS: in flight, {s.Aircraft ?? "unknown aircraft"}"
-            : "MSFS: running (menus)";
-        NetworkText = _discovery.TailscaleAddress is { } ts ? $"Tailscale {ts}" : "Tailscale not found (LAN and manual addresses still work)";
+        (SimStatusTitle, SimStatusDetail) = !s.Connected
+            ? ("MSFS not running", s.Status.StartsWith("waiting", StringComparison.OrdinalIgnoreCase) ? "" : s.Status)
+            : s.InFlight ? ("In flight", s.Aircraft ?? "")
+            : ("MSFS in menus", "");
         if (s.Connected && !_catalogRequested)
         {
             _catalogRequested = true;
@@ -181,13 +227,27 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         var items = _discovery.Players.Select(p =>
         {
             var b = p.Beacon;
-            string sim = b.SimRunning ? (b.SimAircraft ?? "MSFS running") : "MSFS closed";
-            string party = b.Party is { } bp ? $"{bp.Name} · {bp.Members}/2 · {bp.Phase}" : "not in a party";
+            string status = b.SimRunning ? (b.SimAircraft is { } a ? $"Flying the {a}" : "MSFS open") : "MSFS closed";
+            string? party = b.Party is { } bp
+                ? bp.Phase switch
+                {
+                    PartyPhase.Lobby => bp.Members < 2 ? $"Hosting {bp.Name} · looking for a co-pilot" : $"In {bp.Name} · full",
+                    _ => $"In {bp.Name} · flying",
+                }
+                : null;
             bool joinable = p.CanJoin && _party is null;
-            return new PlayerItem(b.Id, b.Name, $"{p.Address} via {p.Via} · {sim}", party, joinable, p);
+            return new PlayerItem(b.Id, b.Name, Initial(b.Name), status, party, joinable, p.Address, p);
         }).ToList();
         Players.Clear();
         foreach (var i in items) Players.Add(i);
+
+        var saved = _saved.Select(kv =>
+        {
+            var who = _discovery.Players.FirstOrDefault(p => p.From.Address.Equals(kv.Value.Address));
+            return new SavedPeerItem(kv.Key, who is null ? "No answer yet" : who.Beacon.Name, who is not null, kv.Value);
+        }).ToList();
+        SavedPeers.Clear();
+        foreach (var sp in saved) SavedPeers.Add(sp);
     }
 
     private void RefreshParty(PartyState s)
@@ -203,9 +263,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             IsPartyHost = _party!.IsHost;
             PartyRole = _party.IsHost ? "you host this party" : _party.IsConnected ? $"hosted by {s.Member(s.HostId)?.Name}" : "reconnecting to the host...";
 
-            CaptainName = s.Captain is { } c ? Label(c, me) : "empty";
+            CaptainInitial = s.Captain is { } ci ? Initial(ci.Name) : "";
+            FirstOfficerInitial = s.FirstOfficer is { } fi ? Initial(fi.Name) : "";
+            CaptainName = s.Captain is { } c ? Label(c, me) : "Empty seat";
             CaptainStatus = s.Captain is { } c2 ? MemberStatus(c2) : "waiting for a pilot";
-            FirstOfficerName = s.FirstOfficer is { } f ? Label(f, me) : "empty";
+            FirstOfficerName = s.FirstOfficer is { } f ? Label(f, me) : "Empty seat";
             FirstOfficerStatus = s.FirstOfficer is { } f2 ? MemberStatus(f2) : "waiting for a pilot";
             IAmCaptain = s.CaptainId == me;
             IAmFirstOfficer = s.FirstOfficerId == me;
@@ -219,9 +281,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 Aircraft.Clear();
                 foreach (var a in _party.SharedCatalog) Aircraft.Add(a.Title);
             }
-            CatalogHint = s.Members.Count < 2 ? "Showing your aircraft. Once a First Officer joins, only aircraft and liveries installed on both PCs are listed."
-                : Aircraft.Count == 0 ? (s.Members.Any(m => m.CatalogCount == 0) ? "Waiting for the other PC's aircraft list (it is read when MSFS runs)." : "No aircraft is installed on both PCs.")
-                : $"{Aircraft.Count} aircraft installed on both PCs";
+            CatalogHint = s.Members.Count < 2 ? "Showing your aircraft. Once your co-pilot joins, only what you both have installed is listed."
+                : Aircraft.Count == 0 ? (s.Members.Any(m => m.CatalogCount == 0) ? "Waiting for your co-pilot's aircraft list. It's read when MSFS is open." : "You don't have any aircraft in common.")
+                : $"{Aircraft.Count} aircraft you both have";
 
             var setup = s.Setup;
             SelectedAircraft = setup.AircraftTitle;
@@ -231,11 +293,24 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             AirlineCallsign = setup.AirlineCallsign ?? "";
             FlightNumber = setup.FlightNumber ?? "";
             HasPlan = setup.Plan is not null;
-            PlanSummary = setup.Plan is { } p
-                ? $"{p.Origin} → {p.Destination}   ·   FL{(p.CruiseAltitudeFt ?? 0) / 100:000}   ·   rwy {p.DepartureRunway ?? "?"}\n{p.Route}\n" +
-                  $"{p.AircraftIcao} {p.Registration}   ·   fuel {p.BlockFuel:0} {p.WeightUnit}   ·   {p.Passengers} pax   ·   imported by {p.FetchedBy}"
-                : "No flight plan. Import one from SimBrief, or the flight starts where the Captain's aircraft is.";
-            EditedBy = setup.EditedBy is { } by ? $"last change by {s.Member(by)?.Name ?? by}" : "";
+            NoPlan = !HasPlan;
+            if (setup.Plan is { } p)
+            {
+                PlanOrigin = p.Origin;
+                PlanDestination = p.Destination;
+                PlanOriginName = Title(p.OriginName);
+                PlanDestinationName = Title(p.DestinationName);
+                var facts = new List<string>();
+                if (p.CruiseAltitudeFt is { } alt) facts.Add($"FL{alt / 100:000}");
+                if (p.DepartureRunway is { } rwy) facts.Add($"Runway {rwy}");
+                if (p.BlockFuel is { } fuel) facts.Add($"{fuel:N0} {p.WeightUnit ?? ""} fuel".Replace("  ", " "));
+                if (p.Passengers is { } pax) facts.Add($"{pax} passengers");
+                if (p.AircraftIcao is { } icao) facts.Add(p.Registration is { } reg ? $"{icao} · {reg}" : icao);
+                PlanFacts = string.Join("   ·   ", facts);
+                PlanRoute = p.Route ?? "";
+                PlanBy = $"Imported by {p.FetchedBy}";
+            }
+            EditedBy = setup.EditedBy is { } by ? $"Last change by {s.Member(by)?.Name ?? by}" : "";
             SetupEditable = s.Phase == PartyPhase.Lobby && s.SeatOf(me) != Seat.None;
 
             InLobbyPhase = s.Phase == PartyPhase.Lobby;
@@ -258,22 +333,30 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private static string Label(MemberInfo m, string me) => m.Id == me ? $"{m.Name} (you)" : m.Name;
 
+    private static string Initial(string? name) =>
+        string.IsNullOrWhiteSpace(name) ? "?" : char.ToUpperInvariant(name.Trim()[0]).ToString();
+
+    /// <summary>"FRANKFURT/MAIN" reads better as "Frankfurt/Main".</summary>
+    private static string Title(string? s) =>
+        string.IsNullOrWhiteSpace(s) ? "" : System.Globalization.CultureInfo.InvariantCulture.TextInfo.ToTitleCase(s.ToLowerInvariant());
+
     private static string MemberStatus(MemberInfo m)
     {
-        if (!m.Connected) return "offline";
-        string sim = m.SimRunning ? (m.SimAircraft is { } a ? $"MSFS: {a}" : "MSFS running") : "MSFS closed";
-        string list = m.CatalogCount > 0 ? $"{m.CatalogCount} aircraft" : "aircraft list pending";
-        return m.LaunchStage is { } st ? $"{st} · {sim}" : $"{sim} · {list}";
+        if (!m.Connected) return "Offline · reconnecting";
+        if (m.LaunchStage is { } st) return char.ToUpperInvariant(st[0]) + st[1..];
+        string sim = m.SimRunning ? (m.SimAircraft is { } a ? $"In the {a}" : "MSFS open") : "MSFS closed";
+        return m.CatalogCount > 0 ? $"{sim} · {m.CatalogCount} aircraft" : sim;
     }
 
     private void RefreshFlight()
     {
-        MyStage = _launch.Stage == LaunchStage.Failed ? $"Launch failed: {_launch.Error}" : LaunchCoordinator.Describe(_launch.Stage);
+        string stage = LaunchCoordinator.Describe(_launch.Stage);
+        MyStage = _launch.Stage == LaunchStage.Failed ? $"Launch failed: {_launch.Error}" : char.ToUpperInvariant(stage[0]) + stage[1..];
         if (_sim.Session is { } st)
         {
-            string sync = st.Incompatible is { } inc ? "INCOMPATIBLE: " + inc : !st.Established ? "connecting" : st.InitialSync ? "initial sync" : "in sync";
-            SessionText = $"Cockpit link: {st.Link} · rtt {st.LinkStats.RttMs} ms · {sync} · {st.PendingWrites} pending · {st.Rejections} rejected";
-            ControlsText = st.PilotFlying ? "You are PILOT FLYING" : "You are PILOT MONITORING (the other pilot flies; your aircraft follows)";
+            string sync = st.Incompatible is { } inc ? "Not compatible: " + inc : !st.Established ? "Connecting" : st.InitialSync ? "Syncing the cockpits" : "Cockpits in sync";
+            SessionText = $"{sync}   ·   {st.LinkStats.RttMs} ms{(st.Rejections > 0 ? $"   ·   {st.Rejections} switch(es) the sim refused" : "")}";
+            ControlsText = st.PilotFlying ? "You have the controls" : "Your co-pilot has the controls";
         }
         else
         {
@@ -288,7 +371,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         _myCatalog = AircraftCatalog.Group(list);
         AircraftCatalog.SaveCache(_myCatalog);
-        CatalogText = $"aircraft list: {_myCatalog.Count} aircraft ({list.Count} liveries)";
+        CatalogText = $"{_myCatalog.Count} aircraft installed";
         PublishCatalog();
     }
 
@@ -323,6 +406,20 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         _settings.PlayerName = value.Trim();
         _settings.Save();
+        MyInitial = Initial(value);
+    }
+
+    // Callsign fields save themselves when you leave the box (no Apply button).
+    partial void OnCallsignChanged(string value) => SendCallsign();
+    partial void OnAirlineCallsignChanged(string value) => SendCallsign();
+    partial void OnFlightNumberChanged(string value) => SendCallsign();
+
+    private void SendCallsign()
+    {
+        if (_applying || _party?.State is not { } s) return;
+        var cur = s.Setup;
+        if ((cur.Callsign ?? "") == Callsign.Trim() && (cur.AirlineCallsign ?? "") == AirlineCallsign.Trim() && (cur.FlightNumber ?? "") == FlightNumber.Trim()) return;
+        _party.Send(new SetCallsign(Callsign, AirlineCallsign, FlightNumber));
     }
 
     // ------------------------------------------------------------------ commands
@@ -333,7 +430,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         try
         {
             SetParty(PartyNode.Host(new LocalPlayer(_settings.PlayerId, PlayerName), $"{PlayerName}'s flight", _partyPort));
-            AddLog($"party created; others on your network or tailnet can now join (UDP {_partyPort})");
+            AddLog($"Party created. Your co-pilot can now join it from their list.");
         }
         catch (InvalidOperationException e)
         {
@@ -397,20 +494,20 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     }
 
     [RelayCommand]
-    private void ApplyCallsign() => _party?.Send(new SetCallsign(Callsign, AirlineCallsign, FlightNumber));
-
-    [RelayCommand]
     private async Task ImportSimBrief()
     {
         if (_party is null) return;
         Importing = true;
         try
         {
-            var plan = await SimBrief.FetchLatestAsync(Http, SimBriefUser, PlayerName);
+            // Offline testing: SKYLINK_DEV_SIMBRIEF_FILE points at a saved OFP (JSON).
+            var plan = Environment.GetEnvironmentVariable("SKYLINK_DEV_SIMBRIEF_FILE") is { Length: > 0 } devFile
+                ? SimBrief.Parse(await System.IO.File.ReadAllTextAsync(devFile), PlayerName, DateTimeOffset.UtcNow).Plan
+                : await SimBrief.FetchLatestAsync(Http, SimBriefUser, PlayerName);
             _settings.SimBriefUser = SimBriefUser.Trim();
             _settings.Save();
             _party.Send(new SetPlan(plan));
-            Show($"Imported {plan.Origin} → {plan.Destination} from SimBrief{(plan.PlnXml is null ? " (no MSFS .pln offered; SkyLink writes a direct route)" : "")}", error: false);
+            Show($"Imported {plan.Origin} → {plan.Destination} from SimBrief.", error: false);
         }
         catch (Exception e) when (e is HttpRequestException or TaskCanceledException or InvalidOperationException or ArgumentException or System.Text.Json.JsonException)
         {
@@ -456,18 +553,45 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     [RelayCommand] private void DismissMessage() => Message = null;
 
+    [RelayCommand]
+    private void CopyAddress(AddressItem? item)
+    {
+        if (item is null) return;
+        try
+        {
+            Clipboard.SetText(item.Address);
+            Show($"Copied {item.Address}. Send it to your co-pilot so they can add you.", error: false);
+        }
+        catch (System.Runtime.InteropServices.COMException)
+        {
+            Show("Couldn't use the clipboard right now; try again.", error: true);
+        }
+    }
+
+    [RelayCommand]
+    private void RemovePeer(SavedPeerItem? item)
+    {
+        if (item is null) return;
+        _discovery.RemoveManual(item.Endpoint);
+        _saved.Remove(item.Text);
+        _settings.ManualPeers.Remove(item.Text);
+        _settings.Save();
+        RefreshPlayers();
+    }
+
     private bool TryAddPeer(string text, bool save)
     {
         if (string.IsNullOrWhiteSpace(text)) return false;
         try
         {
-            _discovery.AddManual(text.Trim());
+            _saved[text.Trim()] = _discovery.AddManual(text.Trim());
+            RefreshPlayers();
             if (save && !_settings.ManualPeers.Contains(text.Trim()))
             {
                 _settings.ManualPeers.Add(text.Trim());
                 _settings.Save();
             }
-            AddLog($"looking for a SkyLink player at {text.Trim()}");
+            AddLog($"Looking for a pilot at {text.Trim()}");
             return true;
         }
         catch (Exception e) when (e is ArgumentException or FormatException or System.Net.Sockets.SocketException)
@@ -477,8 +601,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    private DateTime _messageAt;
+
     private void Show(string message, bool error)
     {
+        _messageAt = DateTime.UtcNow;
         Message = message;
         MessageIsError = error;
         AddLog(message);
