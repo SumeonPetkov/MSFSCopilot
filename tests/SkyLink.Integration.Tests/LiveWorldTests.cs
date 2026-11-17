@@ -77,8 +77,8 @@ public sealed class LiveWorldTests(ITestOutputHelper output)
             with { VWorldEastFps = Math.Sin(hdg) * fps, VWorldNorthFps = Math.Cos(hdg) * fps, VWorldUpFps = 0 };
         ulong seq = 0;
         var clockStart = clock.ElapsedMilliseconds;
-        var seenObjects = new List<uint>();
-        b.TrafficScanned += (_, list) => seenObjects = [.. list.Select(o => o.Id)];
+        var seenByKind = new Dictionary<TrafficKind, int>();
+        b.TrafficScanned += (k, list) => seenByKind[k] = list.Count;
         try
         {
             long until = clock.ElapsedMilliseconds + 12_000;
@@ -90,8 +90,9 @@ public sealed class LiveWorldTests(ITestOutputHelper output)
                 PumpFor(b, clock, 200);
             }
             Assert.Equal(1, b.World.TrafficMirrored);
-            Assert.Equal(0, b.World.ForeignTraffic);
-            output.WriteLine($"created and moved '{title}' as a mirrored aircraft; foreign traffic here: {b.World.ForeignTraffic} (scan saw {seenObjects.Count} AI objects)");
+            // This sim may have its own AI traffic on; ours must never be counted as foreign.
+            Assert.True(b.World.ForeignTraffic < seenByKind.Values.Sum(), $"foreign {b.World.ForeignTraffic} of {seenByKind.Values.Sum()} scanned: ours was counted");
+            output.WriteLine($"created and moved '{title}' as a mirrored aircraft; foreign traffic here: {b.World.ForeignTraffic} (scan saw {seenByKind.Values.Sum()} AI objects)");
         }
         finally
         {

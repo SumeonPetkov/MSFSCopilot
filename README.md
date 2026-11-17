@@ -96,8 +96,8 @@ streamed velocities, and short gaps are bridged by extrapolating up to 0.5 s.
 - **If the link drops:** the monitoring aircraft extrapolates for 0.5 s, then holds. Pressing `t`
   releases it and you fly on your own. If both pilots took the controls during an outage, the
   later takeover wins when the link returns, and the other aircraft eases onto it.
-- **ATC answers are shared.** When either pilot opens the ATC menu or picks a reply, the other
-  pilot's ATC gets exactly the same action, once and in order. Both ATCs stay in the same
+- **ATC answers are shared.** When either pilot toggles the ATC window (its key binding) or
+  picks a reply, the other pilot's ATC gets exactly the same action, once and in order. Both ATCs stay in the same
   conversation and give the same response, and SkyLink shows "Alex answered ATC with reply 2".
 - **SkyLink never leaves your aircraft frozen.** It unfreezes on exit, and whenever MSFS
   disconnects.

@@ -2,6 +2,10 @@
 
 Status: **research only, nothing built.** Needs the user's go-ahead.
 
+Live facts found later (MSFS 2024, in flight): MSFS's own AI traffic uses AI-only models titled
+"Asobo PassiveAircraft A320 CEO", "… E135", "Microsoft PassiveAircraft S340B Passenger" and so on,
+mostly with an empty livery.
+
 ## Finding: feasible, through MSFS 2024's own ATC panel interface
 
 MSFS has no official API for ATC messages. But the ATC window in MSFS 2024 is plain HTML/JS, and
@@ -37,8 +41,8 @@ Other things checked:
 - **`K:ATC_MENU_OPEN` and `K:ATC_MENU_CLOSE` don't exist in MSFS 2024.** Live, MSFS rejects both
   names (`NAME_UNRECOGNIZED`) whenever SkyLink loads the common definition.
   `ATC_MENU_1`..`ATC_MENU_0` are accepted. So today's "open/close the ATC menu" mirroring does
-  nothing, and every connect logs four PROBLEM lines. Follow-up: drop those two from
-  `definitions/_base/common.yaml`.
+  nothing, and every connect logs four PROBLEM lines. Fixed: `common.yaml` now mirrors MSFS 2024's
+  ATC window toggle `K:ATC` instead (accepted live).
 - **How FS Copilot does it, read only for understanding.** Its package replaces Asobo's whole
   `Pages/VCockpit/Core/VCockpit.js` with a modified copy that loads its scripts. It hooks DOM
   mouse and key events of cockpit instruments and relays them over CommBus to its WASM module.

@@ -422,11 +422,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     // ------------------------------------------------------------------ ATC
 
-    /// <summary>"answered ATC with reply 2", "opened the ATC menu"... or null for non-ATC events.</summary>
+    /// <summary>"answered ATC with reply 2", "opened or closed the ATC window"... or null for non-ATC events.</summary>
     public static string? DescribeAtc(string id) => id switch
     {
-        "atc_menu_open" => "opened the ATC menu",
-        "atc_menu_close" => "closed the ATC menu",
+        "atc_window" => "opened or closed the ATC window",
         _ when id.StartsWith("atc_reply_", StringComparison.Ordinal) => $"answered ATC with reply {id["atc_reply_".Length..]}",
         _ => null,
     };
