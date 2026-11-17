@@ -198,8 +198,9 @@ public sealed class WorldTests
     {
         var installed = new List<(string, string)> { ("Airbus A320neo V2", "Default"), ("Cessna 172 Skyhawk", "White"), ("Airbus H125", "Red") };
         var c = TrafficModels.Candidates(new TrafficIdentity(TrafficKind.Airplane, "FSLTL A320 Air France", "", "AF123", "A320", "AFR", "123"), installed);
-        Assert.Equal("Airbus A320neo V2", c[0].Title);
-        Assert.True(c[0].StandIn);
+        Assert.Equal(("FSLTL A320 Air France", false), (c[0].Title, c[0].StandIn)); // the exact model is always tried first
+        var firstStandIn = c.First(x => x.StandIn);
+        Assert.Equal("Airbus A320neo V2", firstStandIn.Title);
         var heli = TrafficModels.Candidates(new TrafficIdentity(TrafficKind.Helicopter, "Bell 407", "", "", "", "", ""), installed);
         Assert.Contains(heli, x => x.Title == "Airbus H125");
         var exact = TrafficModels.Candidates(new TrafficIdentity(TrafficKind.Airplane, "Cessna 172 Skyhawk", "White", "", "", "", ""), installed);
@@ -208,13 +209,30 @@ public sealed class WorldTests
         var mirror = new TrafficMirror();
         mirror.SetInstalledModels(installed);
         var sim = new FakeInjector();
-        sim.Rejects.Add("Airbus A320neo V2"); // even the best stand-in cannot be created
+        sim.Rejects.Add("FSLTL A320 Air France"); // not installed here
+        sim.Rejects.Add("Airbus A320neo V2");     // and even the best stand-in cannot be created
         mirror.OnMessage(new TrafficAdded([new TrafficInfo(1, new TrafficIdentity(TrafficKind.Airplane, "FSLTL A320 Air France", "", "AF123", "A320", "AFR", "123"))]), 0);
         mirror.OnMessage(new TrafficFrame(1, 0, [new TrafficEntry(1, 0, new TrafficSample(Pose(1, 1), 0, false))]), 0);
         for (long t = 400; t < 1000; t += 50) sim.Run(mirror, t);
         Assert.Single(sim.Objects);
         Assert.NotEqual("Airbus A320neo V2", sim.Objects.Values.Single().Spawn.Title);
         Assert.Equal(1, mirror.StandIns);
+    }
+
+    [Fact]
+    public void A_model_that_failed_is_not_tried_again_for_every_aircraft()
+    {
+        var mirror = new TrafficMirror();
+        mirror.SetInstalledModels([("Airbus A320neo V2", "Default")]);
+        var sim = new FakeInjector();
+        sim.Rejects.Add("FSLTL A320 Air France");
+        var who = new TrafficIdentity(TrafficKind.Airplane, "FSLTL A320 Air France", "", "AF1", "A320", "", "");
+        mirror.OnMessage(new TrafficAdded([.. Enumerable.Range(1, 10).Select(i => new TrafficInfo((uint)i, who with { AtcId = "AF" + i }))]), 0);
+        mirror.OnMessage(new TrafficFrame(1, 0, [.. Enumerable.Range(1, 10).Select(i => new TrafficEntry((uint)i, 0, new TrafficSample(Pose(1, 1 + i * 0.01), 0, false)))]), 0);
+        for (long t = 400; t < 3000; t += 50) sim.Run(mirror, t);
+        Assert.Equal(10, sim.Objects.Count);
+        // The uninstalled model was tried (with and without livery) for the first batch in flight only.
+        Assert.True(sim.Spawns.Count(s => s.Title == "FSLTL A320 Air France") <= 8, $"{sim.Spawns.Count(s => s.Title == "FSLTL A320 Air France")} attempts");
     }
 
     [Fact]

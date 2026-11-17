@@ -62,7 +62,7 @@ public sealed class TrafficOptions
     public int MaxExtrapolationMs { get; init; } = 1500;
     /// <summary>With no frame at all for this long the source is gone: remove everything.</summary>
     public int StaleClearMs { get; init; } = 15_000;
-    public int MaxSpawnsInFlight { get; init; } = 4;
+    public int MaxSpawnsInFlight { get; init; } = 8;
     public int SpawnTimeoutMs { get; init; } = 10_000;
     /// <summary>An aircraft whose every model failed is tried again from scratch after this long.</summary>
     public int FailedRetryMs { get; init; } = 30_000;
@@ -268,20 +268,15 @@ public static class TrafficModels
         {
             if (title.Length > 0 && !result.Any(r => r.Item1 == title && r.Item2 == livery)) result.Add((title, livery, standIn));
         }
-        if (installed is null || installed.Count == 0)
-        {
-            // Nothing known about the local install: try the exact model, then its default livery.
-            Add(id.Title, id.Livery, false);
-            Add(id.Title, "", false);
-            return result;
-        }
-        var exact = installed.Where(m => string.Equals(m.Title, id.Title, StringComparison.OrdinalIgnoreCase)).ToList();
-        foreach (var m in exact.Where(m => string.Equals(m.Livery, id.Livery, StringComparison.OrdinalIgnoreCase))) Add(m.Title, m.Livery, false);
-        if (exact.Count > 0)
-        {
-            Add(exact[0].Title, exact.FirstOrDefault(m => m.Livery.Length > 0).Livery ?? "", false);
-            Add(exact[0].Title, "", false);
-        }
+        // Always try the Captain's exact model first, whatever the catalog says: the installed
+        // list may be incomplete (AI-only models are not always listed). A model that is not
+        // installed just fails to create, and the next candidate is tried.
+        Add(id.Title, id.Livery, false);
+        // Then the same model in a livery known to be installed here, then its default livery.
+        if (installed?.FirstOrDefault(m => string.Equals(m.Title, id.Title, StringComparison.OrdinalIgnoreCase) && m.Livery.Length > 0) is { Title: not null } known)
+            Add(known.Title, known.Livery, false);
+        Add(id.Title, "", false);
+        if (installed is null || installed.Count == 0) return result;
 
         // Not installed here: the closest installed model by shared words in the title and ATC model.
         var words = Words(id.Title + " " + id.AtcModel);
@@ -335,6 +330,7 @@ public sealed class TrafficMirror
         public int Timeouts;
         public long FailedAt;
         public List<(string Title, string Livery, bool StandIn)>? Candidates;
+        public (string Title, string Livery) Model;
         public uint LocalId;
         public bool StandIn;
         public long LastWrite = long.MinValue / 2;
@@ -351,6 +347,9 @@ public sealed class TrafficMirror
     private IReadOnlyCollection<(string Title, string Livery)>? _installed;
     private ulong _nextToken;
     private long _lastFrameAt = long.MinValue;
+    private long _stepNow;
+    /// <summary>Models this sim refused to create, and when: skipped for every aircraft for a while.</summary>
+    private readonly Dictionary<(string Title, string Livery), long> _badModels = [];
 
     public TrafficMirror(TrafficOptions? options = null) => _o = options ?? new TrafficOptions();
 
@@ -458,6 +457,7 @@ public sealed class TrafficMirror
     public void OnSpawnFailed(ulong token)
     {
         if (!_tokens.Remove(token, out var e) || e is null || e.State != State.Spawning || e.Token != token) return;
+        _badModels[e.Model] = _stepNow; // many AI aircraft share a model: don't try it for each of them
         e.State = State.Waiting;
         e.Attempt++;
     }
@@ -485,6 +485,7 @@ public sealed class TrafficMirror
 
     public void Step(long now, FlightSample? user, List<TrafficAction> actions)
     {
+        _stepNow = now;
         if (_byRemote.Count > 0 && _lastFrameAt != long.MinValue && now - _lastFrameAt > _o.StaleClearMs) Clear();
 
         foreach (uint id in _orphans)
@@ -515,6 +516,8 @@ public sealed class TrafficMirror
                 case State.Waiting when Ready && inFlight < _o.MaxSpawnsInFlight && e.Follower.HasData:
                 {
                     e.Candidates ??= TrafficModels.Candidates(e.Identity, _installed);
+                    while (e.Attempt < e.Candidates.Count && _badModels.TryGetValue((e.Candidates[e.Attempt].Title, e.Candidates[e.Attempt].Livery), out long badAt) && now - badAt < _o.FailedRetryMs)
+                        e.Attempt++;
                     if (e.Attempt >= e.Candidates.Count)
                     {
                         e.State = State.Failed;
@@ -527,6 +530,7 @@ public sealed class TrafficMirror
                     e.Token = ++_nextToken;
                     e.SpawnStartedAt = now;
                     e.StandIn = standIn;
+                    e.Model = (title, livery);
                     _tokens[e.Token] = e;
                     inFlight++;
                     actions.Add(new SpawnTraffic(e.Token, e.RemoteId, title, livery, TailNumber(e.Identity), pose, standIn));
