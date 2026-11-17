@@ -19,6 +19,7 @@ public static class MessageCodec
         EventAck = 5,
         ControlFrame = 6,
         AuthorityMsg = 7,
+        FlightState = 8,
     }
 
     public static byte[] Encode(Message message)
@@ -86,6 +87,20 @@ public static class MessageCodec
                 w.U8((byte)m.Kind);
                 w.Authority(m.Authority);
                 break;
+            case FlightState m:
+            {
+                w.U8((byte)Tag.FlightState);
+                w.Authority(m.Authority);
+                w.U64(m.Seq);
+                w.I64(m.Time);
+                var f = m.Sample;
+                foreach (double d in new[] { f.LatDeg, f.LonDeg, f.AltFt, f.PitchDeg, f.BankDeg, f.HeadingDeg,
+                             f.VWorldEastFps, f.VWorldUpFps, f.VWorldNorthFps, f.VBodyXFps, f.VBodyYFps, f.VBodyZFps,
+                             f.RotBodyXDps, f.RotBodyYDps, f.RotBodyZDps })
+                    w.F64(d);
+                w.U8(f.OnGround ? (byte)1 : (byte)0);
+                break;
+            }
             default:
                 throw new ArgumentException($"Unknown message type {message.GetType().Name}.");
         }
@@ -104,6 +119,9 @@ public static class MessageCodec
             Tag.EventAck => new EventAck(r.U64(), r.U64()),
             Tag.ControlFrame => new ControlFrame(r.Authority(), r.U64(), r.Array(static (ref Reader x) => new ControlValue(x.U16(), x.F64()))),
             Tag.AuthorityMsg => new AuthorityMsg(r.Kind(), r.Authority()),
+            Tag.FlightState => new FlightState(r.Authority(), r.U64(), r.I64(), new FlightSample(
+                r.F64(), r.F64(), r.F64(), r.F64(), r.F64(), r.F64(), r.F64(), r.F64(), r.F64(),
+                r.F64(), r.F64(), r.F64(), r.F64(), r.F64(), r.F64(), r.Bool())),
             var t => throw new InvalidDataException($"Unknown message tag {(byte)t}."),
         };
         if (!r.AtEnd) throw new InvalidDataException("Trailing bytes after message.");

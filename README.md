@@ -12,7 +12,7 @@ for the full plan.
 | 1. Core sync engine + chaos harness | **Done**: 10,000 randomized hostile-network sessions pass |
 | 2. SimConnect adapter + UDP transport + C172 definition | **Done.** Verified live against MSFS 2024: reads, plus remote writes (K-events) applied and read back in about 70 ms |
 | 3. In-sim bridge module (RPN/H-events, L-var name checks) | App side, protocol and installer **done and tested**, channel verified live in MSFS with a stand-in module. The C++ module is written but **not yet compiled**: that needs the MSFS 2024 SDK |
-| 4. Flight model slaving + control handover in the sim | |
+| 4. Flight model slaving + control handover in the sim | **Done and tested** in simulation (1,000 randomized shared flights) and over real UDP. Not yet run against the live sim, which needs MSFS running |
 | 5. Var Recorder, A320neo/A321 definitions | |
 | 6. WPF UI, diagnostics, release | |
 
@@ -54,6 +54,24 @@ skylink join 100.64.12.34 --code K7PM2X
 ```
 
 Keys while running: `r` request controls, `t` take controls, `g` give controls, `q` quit.
+
+### Who flies
+
+One seat is **pilot flying**: its MSFS runs the real physics, and it sends position, attitude and
+velocities 30 times a second. The other seat is **pilot monitoring**. Once that stream arrives,
+SkyLink freezes the monitoring aircraft's flight model and moves it every frame to where the
+flying aircraft was about 100 ms earlier. The motion between updates is curved using the
+streamed velocities, and short gaps are bridged by extrapolating up to 0.5 s.
+
+- **Handing over** (`r`, then the other seat grants; or `t` to take): the new pilot flying's
+  aircraft is placed exactly on the stream and given its velocities, then unfrozen, so physics
+  carries on without a jolt. The old pilot flying's aircraft eases onto the new stream over 1 s
+  instead of snapping back.
+- **If the link drops:** the monitoring aircraft extrapolates for 0.5 s, then holds. Pressing `t`
+  releases it and you fly on your own. If both pilots took the controls during an outage, the
+  later takeover wins when the link returns, and the other aircraft eases onto it.
+- **SkyLink never leaves your aircraft frozen.** It unfreezes on exit, and whenever MSFS
+  disconnects.
 
 Other commands:
 
@@ -174,4 +192,13 @@ direct write does.
 
 ```bash
 SKYLINK_LIVE_WRITE=1 dotnet test tests/SkyLink.Integration.Tests --filter LiveWrite
+```
+
+Flight model, live. `SKYLINK_LIVE=1 ... --filter LiveFlight` is read-only: your aircraft flies
+and a fake seat follows it. This one **moves your aircraft**: a stationary fake pilot flying sits
+exactly where your aircraft is, your aircraft freezes, turns 5° and back, and is released where
+it started. It is always unfrozen at the end.
+
+```bash
+SKYLINK_LIVE_FOLLOW=1 dotnet test tests/SkyLink.Integration.Tests --filter Live_aircraft_follows
 ```

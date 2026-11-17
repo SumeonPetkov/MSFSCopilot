@@ -22,7 +22,16 @@ public sealed class FakeSimBridge : SimBridgeBase
     public int FakePilotIntervalMs { get; set; } = 3000;
     public List<(int Var, double Param)> AppliedEvents { get; } = [];
     public List<(int Var, double Param)> PressedEvents { get; } = [];
-    public bool IsPilotFlying { get; private set; }
+
+    /// <summary>The fake aircraft: a constant-rate turn while flying, the followed pose while monitoring.</summary>
+    public FlightSample Pose { get; set; } = new(47.45, -122.31, 5000, -2, 20, 10,
+        253 * Math.Sin(10 * Math.PI / 180), 0, 253 * Math.Cos(10 * Math.PI / 180), 0, 0, 253, 0, 3, 0, false);
+    public double TurnRateDps { get; set; } = 3;
+    public bool TrackMoves { get; set; }
+    /// <summary>Largest move between two pumps, divided by the time between them (m/s).</summary>
+    public double MaxApparentSpeedMps { get; private set; }
+    public List<(long T, FlightSample P)> FlownHistory { get; } = [];
+    private long _lastPoseAt = -1;
 
     public FakeSimBridge(AircraftDefinition definition, int seed = 0, int latencyMs = 30)
     {
@@ -73,7 +82,38 @@ public sealed class FakeSimBridge : SimBridgeBase
         }
         for (int v = 0; v < _values.Length; v++)
             if (Definition!.Vars[v].Spec.Class != SyncClass.Event) OnValue(v, _values[v], now);
+        StepFlight(now);
     }
+
+    private void StepFlight(long now)
+    {
+        if (_lastPoseAt < 0) _lastPoseAt = now;
+        double dt = (now - _lastPoseAt) / 1000.0;
+        if (dt <= 0) return;
+        var before = Pose;
+        if (IsPilotFlying)
+        {
+            double speed = Math.Sqrt(Pose.VWorldEastFps * Pose.VWorldEastFps + Pose.VWorldNorthFps * Pose.VWorldNorthFps);
+            double hdg = (Pose.HeadingDeg + TurnRateDps * dt + 360) % 360;
+            Pose = FlightFollower.Extrapolate(Pose, dt) with
+            {
+                HeadingDeg = hdg,
+                VWorldEastFps = speed * Math.Sin(hdg * Math.PI / 180),
+                VWorldNorthFps = speed * Math.Cos(hdg * Math.PI / 180),
+            };
+            FlownHistory.Add((now, Pose));
+        }
+        else if (Follower.Sample(now) is { } p)
+        {
+            Pose = p;
+        }
+        if (TrackMoves) MaxApparentSpeedMps = Math.Max(MaxApparentSpeedMps, FlightFollower.DistanceM(before, Pose) / dt);
+        _lastPoseAt = now;
+        OnFlightRead(Pose);
+    }
+
+    /// <summary>The flying seat's clock time that the current <see cref="Pose"/> was rendered for.</summary>
+    public double FollowerRenderTime() => Follower.RenderRemoteTime(_lastPoseAt);
 
     private void ActLikeAPilot()
     {
@@ -100,11 +140,6 @@ public sealed class FakeSimBridge : SimBridgeBase
         }
     }
 
-    protected override void OnAuthorityChanged(bool isPilotFlying)
-    {
-        IsPilotFlying = isPilotFlying;
-        base.OnAuthorityChanged(isPilotFlying);
-    }
 
     protected override void WriteSimVar(int v, SimRef target, double value) => Schedule(v, value, false);
 

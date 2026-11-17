@@ -14,6 +14,22 @@ namespace SkyLink.Sim;
 public sealed class SimConnectBridge : SimBridgeBase
 {
     private const uint DefTitle = 1, ReqTitle = 1;
+    private const uint DefFlightRead = 30, ReqFlight = 30, DefFlightPose = 31, DefFlightMotion = 32;
+    private const int PoseWriteIntervalMs = 15;
+    private const int FreezeReassertMs = 2000;
+
+    /// <summary>Read every frame, in this order, into <see cref="FlightSample"/>.</summary>
+    private static readonly (string Name, string Unit)[] FlightReadLayout =
+    [
+        ("PLANE LATITUDE", "degrees"), ("PLANE LONGITUDE", "degrees"), ("PLANE ALTITUDE", "feet"),
+        ("PLANE PITCH DEGREES", "degrees"), ("PLANE BANK DEGREES", "degrees"), ("PLANE HEADING DEGREES TRUE", "degrees"),
+        ("VELOCITY WORLD X", "feet per second"), ("VELOCITY WORLD Y", "feet per second"), ("VELOCITY WORLD Z", "feet per second"),
+        ("VELOCITY BODY X", "feet per second"), ("VELOCITY BODY Y", "feet per second"), ("VELOCITY BODY Z", "feet per second"),
+        ("ROTATION VELOCITY BODY X", "degrees per second"), ("ROTATION VELOCITY BODY Y", "degrees per second"),
+        ("ROTATION VELOCITY BODY Z", "degrees per second"), ("SIM ON GROUND", "bool"),
+    ];
+
+    private static readonly string[] FreezeEvents = ["FREEZE_LATITUDE_LONGITUDE_SET", "FREEZE_ALTITUDE_SET", "FREEZE_ATTITUDE_SET"];
     private const uint ReqAircraftState = 2;
     private const uint ReqEnumInputEvents = 3;
     private const uint DefReadBase = 100;
@@ -53,6 +69,12 @@ public sealed class SimConnectBridge : SimBridgeBase
     private long _now;
     private uint _nextReadDef = DefReadBase;
     private uint _nextEventId = EventIdBase;
+    private bool _frozen;
+    private long _lastPoseWrite;
+    private long _lastFreezeAssert;
+
+    /// <summary>True while SkyLink holds this aircraft frozen and moves it to follow the other seat.</summary>
+    public bool IsFollowing => _frozen;
     private bool _channelReady;
 
     // Bridge module and L-var validation.
@@ -114,8 +136,60 @@ public sealed class SimConnectBridge : SimBridgeBase
             if (!_open) break;
         }
         if (!_open || !_channelReady) return; // never talk to the module before its areas are mapped
+        StepFollowing(now);
         _module.Tick(now);
         AdvanceLVarValidation(now);
+    }
+
+    // ------------------------------------------------------------------ flight model
+
+    /// <summary>While monitoring: once the other seat's stream arrives, freeze and follow it every frame.</summary>
+    private void StepFollowing(long now)
+    {
+        if (IsPilotFlying || Definition is null || !Follower.HasData) return;
+        if (now - _lastPoseWrite < PoseWriteIntervalMs) return;
+        if (Follower.Sample(now) is not { } pose) return;
+        // Freeze lazily (only when there is something to follow) and re-assert now and then:
+        // menus, slew or a flight reload can clear the freeze.
+        if (!_frozen || now - _lastFreezeAssert >= FreezeReassertMs) SetFreeze(true, now);
+        WritePose(pose);
+        _lastPoseWrite = now;
+    }
+
+    protected override void OnAuthorityChanged(bool isPilotFlying, bool wasPilotFlying, long now)
+    {
+        if (!_open || !isPilotFlying || !_frozen) return;
+        // Taking the controls: put the aircraft exactly where the stream has it, hand the flight
+        // model the stream's velocities, then let go, so physics continues without a jolt.
+        if (Follower.Sample(now) is { } pose)
+        {
+            WritePose(pose);
+            WriteMotion(pose);
+        }
+        SetFreeze(false, now);
+        Info("flight model released: you have the aircraft");
+    }
+
+    private void SetFreeze(bool on, long now)
+    {
+        foreach (var e in FreezeEvents) TransmitKEvent(e, on ? 1u : 0u);
+        if (on && !_frozen) Info("flight model frozen: following the pilot flying");
+        _frozen = on;
+        _lastFreezeAssert = now;
+    }
+
+    private unsafe void WritePose(in FlightSample p)
+    {
+        double* d = stackalloc double[6];
+        d[0] = p.LatDeg; d[1] = p.LonDeg; d[2] = p.AltFt; d[3] = p.PitchDeg; d[4] = p.BankDeg; d[5] = p.HeadingDeg;
+        Call(SimConnect_SetDataOnSimObject(_h, DefFlightPose, ObjectIdUser, 0, 0, 6 * sizeof(double), d), "set aircraft pose");
+    }
+
+    private unsafe void WriteMotion(in FlightSample p)
+    {
+        double* d = stackalloc double[6];
+        d[0] = p.VBodyXFps; d[1] = p.VBodyYFps; d[2] = p.VBodyZFps; d[3] = p.RotBodyXDps; d[4] = p.RotBodyYDps; d[5] = p.RotBodyZDps;
+        Call(SimConnect_SetDataOnSimObject(_h, DefFlightMotion, ObjectIdUser, 0, 0, 6 * sizeof(double), d), "set aircraft velocities");
     }
 
     private void TryOpen()
@@ -222,6 +296,16 @@ public sealed class SimConnectBridge : SimBridgeBase
         Call(SimConnect_RequestClientData(_h, CdaResponse, ReqBridgeResponse, DefCdaResponse, ClientDataPeriod.OnSet, 0, 0, 0, 0), "subscribe bridge responses");
         _channelReady = true;
 
+        // Flight model: read the aircraft every frame; pose/motion definitions for following.
+        foreach (var (name, unit) in FlightReadLayout)
+            Call(SimConnect_AddToDataDefinition(_h, DefFlightRead, name, unit, DataType.Float64, 0, Unused), $"read {name}");
+        Call(SimConnect_RequestDataOnSimObject(_h, ReqFlight, DefFlightRead, ObjectIdUser, Period.SimFrame, DataRequestFlag.Default, 0, 0, 0), "request flight state");
+        foreach (var (name, unit) in FlightReadLayout[..6])
+            Call(SimConnect_AddToDataDefinition(_h, DefFlightPose, name, unit, DataType.Float64, 0, Unused), $"write {name}");
+        foreach (var (name, unit) in FlightReadLayout[9..15])
+            Call(SimConnect_AddToDataDefinition(_h, DefFlightMotion, name, unit, DataType.Float64, 0, Unused), $"write {name}");
+        foreach (var e in FreezeEvents) MapEvent(e);
+
         RequestAircraftIdentity();
     }
 
@@ -275,6 +359,15 @@ public sealed class SimConnectBridge : SimBridgeBase
             SelectDefinition();
             return;
         }
+        if (req == ReqFlight)
+        {
+            if (r.Length < 40 + FlightReadLayout.Length * 8) return;
+            Span<double> f = stackalloc double[16];
+            for (int i = 0; i < f.Length; i++) f[i] = r.F64(40 + i * 8);
+            OnFlightRead(new FlightSample(f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8],
+                f[9], f[10], f[11], f[12], f[13], f[14], f[15] != 0));
+            return;
+        }
         if (req < DefReadBase || req >= DefWriteBase) return;
         uint count = r.U32(36);
         for (int i = 0, off = 40; i < count; i++, off += 12)
@@ -303,18 +396,22 @@ public sealed class SimConnectBridge : SimBridgeBase
         _status = $"{match.Definition.Name}{(match.IsFallback ? " (GENERIC FALLBACK)" : "")}";
     }
 
+    /// <summary>
+    /// Mappings live as long as the SimConnect connection, across aircraft changes, so ids must
+    /// never be reused within one connection.
+    /// </summary>
+    private uint MapEvent(string name)
+    {
+        if (_eventIds.TryGetValue(name, out uint id)) return id;
+        id = _nextEventId++;
+        _eventIds[name] = id;
+        Call(SimConnect_MapClientEventToSimEvent(_h, id, name), $"K:{name}");
+        return id;
+    }
+
     private void BindDefinition(AircraftDefinition def)
     {
-        // Mappings live as long as the SimConnect connection, across aircraft changes, so ids
-        // must never be reused within one connection.
-        uint EventId(string name)
-        {
-            if (_eventIds.TryGetValue(name, out uint id)) return id;
-            id = _nextEventId++;
-            _eventIds[name] = id;
-            Call(SimConnect_MapClientEventToSimEvent(_h, id, name), $"K:{name}");
-            return id;
-        }
+        uint EventId(string name) => MapEvent(name);
 
         // Reads: all A:/L: variables, chunked, tagged by variable index, changes only, every sim frame.
         var reads = new List<(int V, string Name, string Unit)>();
@@ -590,6 +687,9 @@ public sealed class SimConnectBridge : SimBridgeBase
 
     private void Close()
     {
+        // Never leave the user's aircraft frozen when SkyLink stops or MSFS disconnects.
+        if (_open && _frozen) SetFreeze(false, _now);
+        _frozen = false;
         if (_open) SimConnect_Close(_h);
         _open = false;
         _h = IntPtr.Zero;

@@ -127,7 +127,23 @@ public abstract class SimBridgeBase : ISimBridge
                 engine.OnSimSample(v, _current[v], now);
         foreach (var (v, p) in _capturedEvents) engine.OnLocalEvent(v, p, now);
         _capturedEvents.Clear();
+        if (IsPilotFlying && _latestFlight is { } f) engine.OnFlightSample(f, now);
     }
+
+    // ------------------------------------------------------------------ flight model
+
+    private FlightSample? _latestFlight;
+
+    /// <summary>Follows the other seat's aircraft while this seat is monitoring.</summary>
+    protected FlightFollower Follower { get; } = new();
+
+    public bool IsPilotFlying { get; private set; }
+
+    /// <summary>The local aircraft as last read from the sim.</summary>
+    public FlightSample? LatestFlight => _latestFlight;
+
+    /// <summary>The local aircraft's pose and motion, read every frame.</summary>
+    protected void OnFlightRead(FlightSample s) => _latestFlight = s;
 
     public void Execute(SimCommand command, long now)
     {
@@ -144,14 +160,28 @@ public abstract class SimBridgeBase : ISimBridge
                 Fire(f.Var, f.Param, now);
                 break;
             case AuthorityChanged a:
-                OnAuthorityChanged(a.IsPilotFlying);
+                bool was = IsPilotFlying;
+                IsPilotFlying = a.IsPilotFlying;
+                if (!a.IsPilotFlying)
+                {
+                    // Start following from where we are, so the switch to the stream is eased.
+                    Follower.Reset();
+                    if (_latestFlight is { } here) Follower.SeedOutput(here, now);
+                }
+                Info(a.IsPilotFlying ? "you are PILOT FLYING" : "you are PILOT MONITORING (the other pilot flies)");
+                OnAuthorityChanged(a.IsPilotFlying, was, now);
+                break;
+            case FlightStateUpdate u:
+                Follower.Add(u.RemoteTime, u.Sample, now);
                 break;
         }
     }
 
-    /// <summary>Phase 4: freeze/unfreeze the flight model. Phase 2 only reports it.</summary>
-    protected virtual void OnAuthorityChanged(bool isPilotFlying) =>
-        Info(isPilotFlying ? "you are PILOT FLYING" : "you are PILOT MONITORING (the other pilot flies)");
+    /// <summary>
+    /// Becoming pilot monitoring: freeze the local flight model and follow. Becoming pilot flying:
+    /// put the aircraft where the stream says it is, give it the stream's velocities, unfreeze.
+    /// </summary>
+    protected virtual void OnAuthorityChanged(bool isPilotFlying, bool wasPilotFlying, long now) { }
 
     private void Write(int v, double value, int attempt, long now)
     {

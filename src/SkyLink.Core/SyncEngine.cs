@@ -26,6 +26,9 @@ public sealed class EngineOptions
 
     public int HelloRetransmitMs { get; init; } = 1000;
 
+    /// <summary>How often the pilot flying sends position and motion (default ~30 Hz).</summary>
+    public int FlightStateIntervalMs { get; init; } = 33;
+
     public bool AutoGrantControl { get; init; } = true;
     public int GrantRetransmitMs { get; init; } = 500;
     public int GrantTimeoutMs { get; init; } = 5000;
@@ -61,7 +64,7 @@ public sealed class SyncHealth
 /// </summary>
 public sealed class SyncEngine
 {
-    public const int ProtocolVersion = 1;
+    public const int ProtocolVersion = 2; // 2: FlightState
 
     private readonly SyncSchema _schema;
     private readonly EngineOptions _o;
@@ -122,6 +125,10 @@ public sealed class SyncEngine
     private long _lastControlFrame = long.MinValue / 2;
     private ulong _controlSeq;
     private ulong _lastControlSeqRecv;
+    private FlightSample? _flightLatest;
+    private long _lastFlightSend = long.MinValue / 2;
+    private ulong _flightSeq;
+    private ulong _lastFlightSeqRecv;
     private Authority? _grant;
     private long _grantSentAt;
     private long _grantDeadline;
@@ -289,6 +296,15 @@ public sealed class SyncEngine
         Health.EventsSent++;
     }
 
+    /// <summary>The local aircraft's position and motion (only used while this seat is flying).</summary>
+    public void OnFlightSample(FlightSample sample, long now)
+    {
+        if (IsPilotFlying) _flightLatest = sample;
+    }
+
+    public long FlightStatesSent { get; private set; }
+    public long FlightStatesApplied { get; private set; }
+
     // ------------------------------------------------------------------ control authority
 
     public void RequestControl(long now)
@@ -325,6 +341,8 @@ public sealed class SyncEngine
         bool wasPf = IsPilotFlying;
         _auth = a;
         _lastControlSeqRecv = 0;
+        _lastFlightSeqRecv = 0;
+        _flightLatest = null;
         if (_grant is { } g && a >= g) _grant = null;
         if (wasPf != IsPilotFlying)
         {
@@ -368,6 +386,9 @@ public sealed class SyncEngine
             case AuthorityMsg a:
                 HandleAuthority(a, now);
                 break;
+            case FlightState f:
+                HandleFlightState(f);
+                break;
         }
     }
 
@@ -402,6 +423,7 @@ public sealed class SyncEngine
             if (_eventOutbox.Count > 0) Health.EventsExpired += _eventOutbox.Count;
             _eventOutbox.Clear();
             _lastControlSeqRecv = 0;
+            _lastFlightSeqRecv = 0;
         }
 
         if (!_isHost && h.SessionId != _sessionId)
@@ -584,6 +606,15 @@ public sealed class SyncEngine
                 SimCommands.Enqueue(new WriteControl(c.Var, c.Value));
     }
 
+    private void HandleFlightState(FlightState f)
+    {
+        if (f.Authority.PfSeat == _peerSeat) ObserveAuthority(f.Authority);
+        if (IsPilotFlying || f.Authority != _auth || f.Seq <= _lastFlightSeqRecv) return;
+        _lastFlightSeqRecv = f.Seq;
+        FlightStatesApplied++;
+        SimCommands.Enqueue(new FlightStateUpdate(f.Time, f.Sample));
+    }
+
     private void HandleAuthority(AuthorityMsg m, long now)
     {
         switch (m.Kind)
@@ -625,6 +656,7 @@ public sealed class SyncEngine
         FlushAnalog(now);
         FlushEvents(now);
         FlushControls(now);
+        FlushFlightState(now);
 
         if (_grant is { } g)
         {
@@ -771,6 +803,14 @@ public sealed class SyncEngine
         _lastControlFrame = now;
         _controlDirty = false;
         if (values.Count > 0) Send(Channel.Sequenced, new ControlFrame(_auth, ++_controlSeq, values.ToArray()));
+    }
+
+    private void FlushFlightState(long now)
+    {
+        if (!IsPilotFlying || _flightLatest is not { } s || now - _lastFlightSend < _o.FlightStateIntervalMs) return;
+        _lastFlightSend = now;
+        FlightStatesSent++;
+        Send(Channel.Sequenced, new FlightState(_auth, ++_flightSeq, now, s));
     }
 
     private void SendDigest(long now)

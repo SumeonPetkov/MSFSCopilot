@@ -67,6 +67,9 @@ public sealed record ControlFrame(Authority Authority, ulong Seq, ControlValue[]
 
 public sealed record AuthorityMsg(AuthorityKind Kind, Authority Authority) : Message;
 
+/// <summary>Position and motion from the pilot flying, ~30 Hz, sequenced. <see cref="Time"/> is the sender's clock.</summary>
+public sealed record FlightState(Authority Authority, ulong Seq, long Time, FlightSample Sample) : Message;
+
 public readonly record struct Outgoing(Channel Channel, Message Message);
 
 /// <summary>Instructions from the engine to the simulator adapter.</summary>
@@ -78,6 +81,9 @@ public sealed record WriteVar(int Var, double Value, int Attempt) : SimCommand;
 public sealed record WriteControl(int Var, double Value) : SimCommand;
 
 public sealed record FireEvent(int Var, double Param) : SimCommand;
+
+/// <summary>A flight-state sample from the pilot flying, for the monitoring seat's follower.</summary>
+public sealed record FlightStateUpdate(long RemoteTime, FlightSample Sample) : SimCommand;
 
 /// <summary>This seat became (or stopped being) the pilot flying: freeze/unfreeze physics.</summary>
 public sealed record AuthorityChanged(bool IsPilotFlying, int Epoch) : SimCommand;

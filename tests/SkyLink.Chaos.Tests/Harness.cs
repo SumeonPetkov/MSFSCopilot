@@ -70,6 +70,74 @@ public sealed class FakeSim
 }
 
 /// <summary>Executes engine commands against <see cref="FakeSim"/>, like the real SimConnect adapter will.</summary>
+/// <summary>
+/// A kinematic aircraft: while this seat flies, it holds a constant-rate turn at constant speed;
+/// while monitoring, it shows whatever the follower renders. Records every pose for checks.
+/// </summary>
+public sealed class FakeFlight
+{
+    public double TurnRateDps { get; set; } = 3;
+    public FlightSample Pose { get; set; } = new(47.45, -122.31, 5000, -2, 20, 10,
+        253 * Math.Sin(10 * Math.PI / 180), 0, 253 * Math.Cos(10 * Math.PI / 180), 0, 0, 253, 0, 3, 0, false);
+    public FlightFollower Follower { get; } = new();
+    public bool IsPilotFlying { get; private set; }
+    public bool TrackMoves { get; set; }
+    public double MaxStepMoveM { get; private set; }
+    public List<(long T, FlightSample P)> History { get; } = [];
+    public int Handovers { get; private set; }
+
+    public void OnAuthority(bool pilotFlying, long now)
+    {
+        if (pilotFlying == IsPilotFlying) return;
+        IsPilotFlying = pilotFlying;
+        Handovers++;
+        if (!pilotFlying)
+        {
+            Follower.Reset();
+            Follower.SeedOutput(Pose, now); // ease from where we are into the other seat's stream
+        }
+    }
+
+    public void Step(long now, int dtMs, SyncEngine engine)
+    {
+        var before = Pose;
+        if (IsPilotFlying)
+        {
+            Pose = Fly(Pose, dtMs / 1000.0);
+            History.Add((now, Pose));
+            engine.OnFlightSample(Pose, now);
+        }
+        else if (Follower.Sample(now) is { } p)
+        {
+            Pose = p;
+        }
+        if (TrackMoves) MaxStepMoveM = Math.Max(MaxStepMoveM, FlightFollower.DistanceM(before, Pose));
+    }
+
+    private FlightSample Fly(FlightSample s, double dt)
+    {
+        double speed = Math.Sqrt(s.VWorldEastFps * s.VWorldEastFps + s.VWorldNorthFps * s.VWorldNorthFps);
+        double hdg = (s.HeadingDeg + TurnRateDps * dt + 360) % 360;
+        var moved = FlightFollower.Extrapolate(s, dt);
+        return moved with
+        {
+            HeadingDeg = hdg,
+            VWorldEastFps = speed * Math.Sin(hdg * Math.PI / 180),
+            VWorldNorthFps = speed * Math.Cos(hdg * Math.PI / 180),
+        };
+    }
+
+    /// <summary>The flying seat's pose at one of its own clock times (linear between records).</summary>
+    public FlightSample? PoseAt(double t)
+    {
+        int i = History.FindIndex(h => h.T >= t);
+        if (i <= 0) return null;
+        var (t0, a) = History[i - 1];
+        var (t1, b) = History[i];
+        return FlightFollower.Interpolate(a, b, (t1 - t0) / 1000.0, (t - t0) / (t1 - t0));
+    }
+}
+
 public sealed class FakeAdapter
 {
     /// <summary>Never re-fire a toggle within this window: the previous one may still be in flight.</summary>
@@ -79,6 +147,7 @@ public sealed class FakeAdapter
     private readonly long[] _lastToggle;
 
     public bool IsPilotFlying { get; private set; }
+    public FakeFlight Flight { get; } = new();
 
     public FakeAdapter(FakeSim sim)
     {
@@ -110,6 +179,10 @@ public sealed class FakeAdapter
             case AuthorityChanged a:
                 IsPilotFlying = a.IsPilotFlying;
                 _sim.Frozen = !a.IsPilotFlying;
+                Flight.OnAuthority(a.IsPilotFlying, now);
+                break;
+            case FlightStateUpdate u:
+                Flight.Follower.Add(u.RemoteTime, u.Sample, now);
                 break;
         }
     }
@@ -227,6 +300,7 @@ public sealed class World
     public Peer[] Peers { get; }
     public ChaosLink Link { get; }
     public long T { get; private set; } = 100_000;
+    public bool FlightEnabled { get; set; }
     public List<string> Log { get; } = [];
 
     public World(SyncSchema schema, Random rng, int maxSimLatency, long skewA, long skewB, EngineOptions? options = null)
@@ -303,6 +377,7 @@ public sealed class World
         {
             long now = p.Local(T);
             p.Sim.Step(now);
+            if (FlightEnabled) p.Adapter.Flight.Step(now, StepMs, p.Engine);
             if ((T + p.SamplePhase) % SampleMs < StepMs)
                 for (int v = 0; v < _schema.Vars.Count; v++)
                     if (_schema.Vars[v].Class != SyncClass.Event)
