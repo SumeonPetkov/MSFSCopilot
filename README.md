@@ -102,6 +102,33 @@ streamed velocities, and short gaps are bridged by extrapolating up to 0.5 s.
 - **SkyLink never leaves your aircraft frozen.** It unfreezes on exit, and whenever MSFS
   disconnects.
 
+### One shared world
+
+The Captain's MSFS is the single source of truth for the world around the aircraft; the First
+Officer's sim mirrors it. No VATSIM or online service is involved.
+
+- **AI traffic.** About five times a second the Captain's SkyLink scans every AI aircraft and
+  helicopter within 80 km (the nearest 120 are shared) and asks each new one what it is: title,
+  livery, ATC id, airline, flight number. The FO's SkyLink creates a matching aircraft for each one
+  (`AICreateNonATCAircraft_EX1`), takes it away from the AI, freezes it and moves it every frame
+  along the Captain's stream, rendered about 350 ms behind. Aircraft near you are moved every
+  frame, farther ones less often. Lights and gear follow too. If the model is not installed on the
+  FO's PC, the closest installed one stands in. Aircraft that vanish on the Captain's side vanish
+  on the FO's side.
+- **No ghosts.** Every created aircraft is removed when the flight ends, when SkyLink exits, or
+  when the Captain is gone for 15 s. If SkyLink crashes, the next start removes what it left in
+  the same MSFS session. It only removes aircraft whose title and tail number still match, so it
+  never touches anything else.
+- **The FO must turn MSFS AI traffic off.** SimConnect cannot do it. SkyLink counts AI aircraft in
+  the FO's sim that it did not create, and warns both pilots.
+- **Time, sim rate and pause** follow the Captain: pausing pauses both sims, a different sim rate
+  is stepped to the Captain's, and a clock more than 2 minutes off is set to the Captain's
+  date and time (to the minute).
+- **Weather:** both pilots should fly live weather. SkyLink compares pressure, wind and
+  temperature at the (shared) aircraft position and warns if they differ for 20 s.
+
+`skylink traffic` lists what the Captain's side would share (read-only).
+
 Other commands:
 
 ```bash
@@ -116,10 +143,15 @@ skylink lint definitions
 skylink watch
 ```
 
+```bash
+skylink traffic
+```
+
 `skylink probe` shows which definition matched the loaded aircraft, the current value of every
 variable, every name MSFS rejected, and whether the bridge module is running. `skylink watch`
 prints every cockpit event SkyLink catches as it happens, for example to confirm that clicking an
-ATC reply in MSFS is seen. `skylink lint`
+ATC reply in MSFS is seen. `skylink traffic` scans the AI traffic, time and weather the way the
+Captain's SkyLink does, and lists them without changing anything. `skylink lint`
 validates the definition files.
 
 ### The in-sim bridge module
@@ -256,4 +288,13 @@ it started. It is always unfrozen at the end.
 
 ```bash
 SKYLINK_LIVE_FOLLOW=1 dotnet test tests/SkyLink.Integration.Tests --filter Live_aircraft_follows
+```
+
+Shared world, live. With `SKYLINK_LIVE=1`, `--filter LiveWorld` scans the AI traffic and reads
+time, rate, pause and weather. It is read-only. This one **changes the sim**: it creates one AI
+aircraft (a copy of yours) 300 m ahead, moves it for 12 s as a mirrored aircraft, then removes it
+and checks that it is gone. Your aircraft is not touched.
+
+```bash
+SKYLINK_LIVE_TRAFFIC=1 dotnet test tests/SkyLink.Integration.Tests --filter One_mirrored_aircraft
 ```

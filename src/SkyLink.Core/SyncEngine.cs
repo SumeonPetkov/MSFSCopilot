@@ -64,7 +64,7 @@ public sealed class SyncHealth
 /// </summary>
 public sealed class SyncEngine
 {
-    public const int ProtocolVersion = 2; // 2: FlightState
+    public const int ProtocolVersion = 3; // 2: FlightState, 3: shared world (traffic, time, rate, pause)
 
     private readonly SyncSchema _schema;
     private readonly EngineOptions _o;

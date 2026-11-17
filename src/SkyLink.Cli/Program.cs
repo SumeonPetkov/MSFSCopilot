@@ -19,6 +19,7 @@ public static class Program
           skylink lint [DIR]                            validate aircraft definitions
           skylink install-bridge [--dry-run]            install the in-sim bridge module into MSFS
           skylink watch [--seconds N]                   print every cockpit event SkyLink catches (e.g. ATC replies)
+          skylink traffic [--seconds N] [--radius KM]   list the AI traffic, time and weather SkyLink would share (read-only)
 
         options:
           --defs DIR         definitions folder (default: the one shipped with SkyLink)
@@ -46,6 +47,7 @@ public static class Program
                 "probe" => Probe(a),
                 "install-bridge" => InstallBridge(a),
                 "watch" => Watch(a),
+                "traffic" => Traffic(a),
                 "host" => RunSession(a, host: true),
                 "join" => RunSession(a, host: false),
                 _ => Fail($"unknown command '{args[0]}'\n\n{Usage}"),
@@ -245,6 +247,51 @@ public static class Program
             bridge.DataAvailable.WaitOne(20);
         }
         Console.WriteLine($"{seen} event(s) caught.");
+        foreach (var p in bridge.Problems) Console.WriteLine("PROBLEM: " + p);
+        return 0;
+    }
+
+    /// <summary>Read-only: scan the AI traffic as the Captain's SkyLink does, and print it.</summary>
+    private static int Traffic(Args a)
+    {
+        var catalog = LoadCatalog(a);
+        int seconds = a.GetInt("seconds") ?? 10;
+        using var bridge = new SimConnectBridge(catalog);
+        if (a.GetInt("radius") is { } km) bridge.TrafficRadiusMeters = (uint)Math.Max(1, km) * 1000;
+        bridge.Log += m => Console.WriteLine("  " + m);
+        var identities = new Dictionary<uint, TrafficIdentity>();
+        var latest = new Dictionary<TrafficKind, IReadOnlyList<(uint Id, TrafficSample Sample)>>();
+        int scans = 0;
+        bridge.TrafficScanned += (k, list) =>
+        {
+            latest[k] = list;
+            scans++;
+        };
+        bridge.TrafficIdentified += (id, identity) => identities[id] = identity;
+        long start = Environment.TickCount64;
+        bridge.Execute(new SetWorldRole(WorldRole.Source), 1); // scanning only: nothing is written to the sim
+        var end = DateTime.UtcNow.AddSeconds(seconds);
+        while (DateTime.UtcNow < end)
+        {
+            bridge.Pump(Environment.TickCount64 - start + 1);
+            bridge.DataAvailable.WaitOne(20);
+        }
+        var me = bridge.LatestFlight;
+        var all = latest.Values.SelectMany(l => l).ToList();
+        Console.WriteLine();
+        Console.WriteLine($"user aircraft: object {bridge.UserObjectId}, {(me is { } u ? $"{u.LatDeg:F5} {u.LonDeg:F5} {u.AltFt:F0} ft" : "no position")}");
+        Console.WriteLine($"{scans} scans, {all.Count} AI aircraft within {bridge.TrafficRadiusMeters / 1000} km, {identities.Count} identified");
+        foreach (var (id, s) in all.OrderBy(o => me is { } m ? FlightFollower.DistanceM(m, o.Sample.Pose) : o.Id))
+        {
+            var p = s.Pose;
+            identities.TryGetValue(id, out var who);
+            string dist = me is { } m ? $"{FlightFollower.DistanceM(m, p) / 1852:F1} nm" : "";
+            double gs = Math.Sqrt(p.VWorldEastFps * p.VWorldEastFps + p.VWorldNorthFps * p.VWorldNorthFps) * 0.592484;
+            Console.WriteLine($"  {id,6} {dist,9} {p.AltFt,7:F0} ft {gs,4:F0} kt {(p.OnGround ? "ground" : "air   ")} lights {s.Lights:X3} gear {(s.GearDown ? "down" : "up  ")}  " +
+                              $"{who?.AtcId,-8} {who?.Airline} {who?.FlightNumber}  '{who?.Title}' livery '{who?.Livery}' model '{who?.AtcModel}'");
+        }
+        if (bridge.World.Local is { } w)
+            Console.WriteLine($"world: {w.Zulu:yyyy-MM-dd HH:mm:ss}Z, rate {w.SimRate}, {(bridge.IsPaused ? "PAUSED" : "running")}, {w.SeaLevelPressureMb:F1} hPa, wind {w.WindDirDeg:F0}°/{w.WindKts:F0} kt, {w.TempC:F1} °C");
         foreach (var p in bridge.Problems) Console.WriteLine("PROBLEM: " + p);
         return 0;
     }

@@ -7,6 +7,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using SkyLink.Definitions;
 using SkyLink.Lobby;
+using SkyLink.Core;
 using SkyLink.Session;
 using SkyLink.Sim;
 
@@ -105,6 +106,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty] private string _sessionText = "";
     [ObservableProperty] private string _controlsText = "";
     [ObservableProperty] private string _lastAtc = "";
+    [ObservableProperty] private string _worldText = "";
+    [ObservableProperty] private string _worldDetail = "";
+    private bool _warnedForeign, _warnedWeather;
     [ObservableProperty] private string? _message;
     [ObservableProperty] private bool _messageIsError;
 
@@ -361,12 +365,59 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             string sync = st.Incompatible is { } inc ? "Not compatible: " + inc : !st.Established ? "Connecting" : st.InitialSync ? "Syncing the cockpits" : "Cockpits in sync";
             SessionText = $"{sync}   ·   {st.LinkStats.RttMs} ms{(st.Rejections > 0 ? $"   ·   {st.Rejections} switch(es) the sim refused" : "")}";
             ControlsText = st.PilotFlying ? "You have the controls" : "Your co-pilot has the controls";
+            (WorldText, WorldDetail) = DescribeWorld(st.World, st.PeerWorld, CoPilotName());
+            WarnAboutWorld(st.World, st.PeerWorld);
         }
         else
         {
             SessionText = "";
             ControlsText = "";
+            WorldText = WorldDetail = "";
+            _warnedForeign = _warnedWeather = false;
         }
+    }
+
+    // ------------------------------------------------------------------ shared world
+
+    /// <summary>The "shared world" row: what is mirrored, and what is wrong (own MSFS traffic still on, other weather).</summary>
+    public static (string Headline, string Detail) DescribeWorld(WorldStatus w, WorldNotice? peer, string coPilot)
+    {
+        var parts = new List<string>();
+        if ((w.Role == WorldRole.Mirror ? w.Remote : w.Local) is { } ws)
+            parts.Add($"{ws.Zulu:HH:mm}Z · {(ws.Paused ? "paused" : $"{ws.SimRate:0.##}× sim rate")}");
+        switch (w.Role)
+        {
+            case WorldRole.Source:
+                if (peer is { ForeignTraffic: > 0 } p1)
+                    parts.Add($"⚠ {coPilot} still has MSFS AI traffic on ({p1.ForeignTraffic} aircraft): ask them to turn it off");
+                if (peer is { WeatherMismatch: true })
+                    parts.Add($"⚠ {coPilot}'s weather differs from yours: both should fly live weather");
+                return ($"Sharing your world: {w.TrafficSeen} AI aircraft, time and pause", string.Join("   ·   ", parts));
+            case WorldRole.Mirror:
+                string shown = w.TrafficSeen == 0 ? "no AI traffic"
+                    : $"{w.TrafficMirrored} of {w.TrafficSeen} AI aircraft shown{(w.StandIns > 0 ? $" ({w.StandIns} with a stand-in model)" : "")}";
+                if (w.ForeignTraffic > 0)
+                    parts.Add($"⚠ Your MSFS still shows its own AI traffic ({w.ForeignTraffic} aircraft): turn AI traffic off in MSFS's traffic options");
+                if (w.WeatherMismatch)
+                    parts.Add($"⚠ Your weather differs from the Captain's ({w.WeatherDetail}): use live weather");
+                return ($"The Captain's world: {shown}", string.Join("   ·   ", parts));
+            default:
+                return ("", "");
+        }
+    }
+
+    private void WarnAboutWorld(WorldStatus w, WorldNotice? peer)
+    {
+        bool foreign = w.ForeignTraffic > 0 || peer is { ForeignTraffic: > 0 };
+        bool weather = w.WeatherMismatch || peer is { WeatherMismatch: true };
+        if (foreign && !_warnedForeign)
+            Show(w.Role == WorldRole.Mirror
+                ? "Your MSFS still has its own AI traffic. Turn AI traffic off in MSFS so you only see the Captain's."
+                : $"{CoPilotName()}'s MSFS still has its own AI traffic. Ask them to turn it off.", error: true);
+        if (weather && !_warnedWeather && !foreign)
+            Show("The two sims have different weather. Both pilots should use live weather.", error: true);
+        _warnedForeign = foreign;
+        _warnedWeather = weather;
     }
 
     // ------------------------------------------------------------------ ATC

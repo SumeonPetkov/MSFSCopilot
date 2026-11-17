@@ -25,7 +25,9 @@ public sealed record SessionStatus(
     long LocalChanges,
     long RemoteApplied,
     long EventsSent,
-    long EventsApplied);
+    long EventsApplied,
+    WorldStatus World,
+    WorldNotice? PeerWorld);
 
 /// <summary>
 /// The session loop. Everything (sim pump, network poll, engine) runs on one thread, so the
@@ -42,6 +44,7 @@ public sealed class SessionRunner : IDisposable
     private readonly object _statusLock = new();
     private readonly Queue<Action<SyncEngine, long>> _requests = new();
     private SyncEngine? _engine;
+    private readonly WorldSync _world;
     private int _generation = -1;
     private bool _linkUp;
     private SessionStatus _status;
@@ -59,6 +62,7 @@ public sealed class SessionRunner : IDisposable
         _link = link;
         _options = options;
         _ownsSim = ownsSim;
+        _world = new WorldSync(link.IsHost);
         _status = BuildStatus();
         _simLog = m => Log?.Invoke("[sim] " + m);
         _sim.Log += _simLog;
@@ -75,13 +79,18 @@ public sealed class SessionRunner : IDisposable
             Log?.Invoke($"[net] disconnected: {reason}");
             _engine?.OnDisconnected(Now);
         };
-        _link.Received += m => _engine?.OnMessage(m, Now);
+        _link.Received += m =>
+        {
+            if (WorldSync.Handles(m)) _world.OnMessage(m, Now);
+            else _engine?.OnMessage(m, Now);
+        };
     }
 
     /// <summary>Monotonic milliseconds, aligned to Unix time at start (HLC wall clock).</summary>
     public long Now => _epochMs + _clock.ElapsedMilliseconds;
 
     public SyncEngine? Engine => _engine;
+    public WorldSync World => _world;
 
     public SessionStatus Status
     {
@@ -112,6 +121,7 @@ public sealed class SessionRunner : IDisposable
     public void Step()
     {
         long now = Now;
+        _world.SetEstablished(_engine?.IsEstablished ?? false);
         _link.Poll(now);
         _sim.Pump(now);
 
@@ -128,12 +138,24 @@ public sealed class SessionRunner : IDisposable
             while (e.Outbox.TryDequeue(out var o)) _link.Send(o);
         }
 
+        // The shared world lives across aircraft changes; it only talks to a compatible peer.
+        _world.SetEstablished(e?.IsEstablished ?? false);
+        _sim.FeedWorld(_world, now);
+        _world.Tick(now);
+        DrainWorld(now);
+
         if (now - _lastStatus >= 250)
         {
             _lastStatus = now;
             var s = BuildStatus();
             lock (_statusLock) _status = s;
         }
+    }
+
+    private void DrainWorld(long now)
+    {
+        while (_world.SimCommands.TryDequeue(out var c)) _sim.Execute(c, now);
+        while (_world.Outbox.TryDequeue(out var o)) _link.Send(o);
     }
 
     private void RebuildEngine(long now)
@@ -191,11 +213,16 @@ public sealed class SessionRunner : IDisposable
             h?.LocalChanges ?? 0,
             h?.RemoteApplied ?? 0,
             h?.EventsSent ?? 0,
-            h?.EventsApplied ?? 0);
+            h?.EventsApplied ?? 0,
+            _sim.World,
+            _world.PeerNotice);
     }
 
     public void Dispose()
     {
+        // Never leave mirrored aircraft behind: remove them before the link goes.
+        _world.Stop();
+        while (_world.SimCommands.TryDequeue(out var c)) _sim.Execute(c, Now);
         _engine?.OnDisconnected(Now);
         _link.Dispose();
         _sim.Log -= _simLog;

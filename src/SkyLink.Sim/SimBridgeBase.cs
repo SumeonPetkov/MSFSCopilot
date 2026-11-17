@@ -28,7 +28,32 @@ public interface ISimBridge : IDisposable
 
     void Execute(SimCommand command, long now);
 
+    /// <summary>Feed what the sim knows about the shared world (traffic scans, time/rate/pause, warnings).</summary>
+    void FeedWorld(WorldSync world, long now);
+
+    /// <summary>The shared world as this sim sees it, for the UI.</summary>
+    WorldStatus World { get; }
+
     event Action<string>? Log;
+}
+
+/// <param name="TrafficSeen">Captain: AI aircraft found in this sim. FO: AI aircraft the Captain announced.</param>
+/// <param name="TrafficMirrored">FO: AI aircraft created here and following the Captain's.</param>
+/// <param name="StandIns">FO: of those, shown with a different model (the Captain's is not installed here).</param>
+/// <param name="ForeignTraffic">FO: AI aircraft in this sim that SkyLink did not create (MSFS traffic still on).</param>
+public sealed record WorldStatus(
+    WorldRole Role,
+    int TrafficSeen,
+    int TrafficMirrored,
+    int StandIns,
+    int TrafficFailed,
+    int ForeignTraffic,
+    bool WeatherMismatch,
+    string? WeatherDetail,
+    WorldSample? Local,
+    WorldSample? Remote)
+{
+    public static readonly WorldStatus None = new(WorldRole.None, 0, 0, 0, 0, 0, false, null, null, null);
 }
 
 /// <summary>
@@ -154,6 +179,7 @@ public abstract class SimBridgeBase : ISimBridge
 
     public void Execute(SimCommand command, long now)
     {
+        if (ExecuteWorld(command, now)) return;
         if (_definition is null) return;
         switch (command)
         {
@@ -183,6 +209,160 @@ public abstract class SimBridgeBase : ISimBridge
                 break;
         }
     }
+
+    // ------------------------------------------------------------------ shared world
+
+    /// <summary>The First Officer's injected copies of the Captain's AI aircraft.</summary>
+    protected TrafficMirror Mirror { get; } = new();
+    /// <summary>The First Officer's time/rate/pause follower and weather comparison.</summary>
+    protected WorldFollower WorldFollow { get; } = new();
+    public WorldRole WorldRole { get; private set; }
+
+    private readonly List<(TrafficKind Kind, List<(uint, TrafficSample)> Objects, long At)> _scans = [];
+    private readonly List<(uint Id, TrafficIdentity Identity)> _identities = [];
+    private bool _trafficLost;
+    private WorldSample? _localWorld;
+    private readonly List<TrafficAction> _trafficActions = [];
+    private readonly List<WorldAction> _worldActions = [];
+
+    /// <summary>FO: AI aircraft in this sim that SkyLink did not create.</summary>
+    protected int ForeignTraffic { get; set; }
+    /// <summary>Captain: AI aircraft in the last scans.</summary>
+    protected int TrafficSeen { get; set; }
+
+    public virtual WorldStatus World => new(WorldRole,
+        WorldRole == WorldRole.Mirror ? Mirror.Known : TrafficSeen,
+        Mirror.Spawned, Mirror.StandIns, Mirror.Failed, ForeignTraffic,
+        WorldFollow.WeatherMismatch, WorldFollow.WeatherMismatch ? WorldFollow.WeatherDetail : null,
+        _localWorld, WorldFollow.Remote);
+
+    /// <summary>Captain: a complete scan of one kind of AI object around the aircraft.</summary>
+    protected void OnTrafficScan(TrafficKind kind, List<(uint, TrafficSample)> objects, long now)
+    {
+        if (WorldRole != WorldRole.Source) return;
+        _scans.RemoveAll(s => s.Kind == kind); // only the newest scan per kind matters
+        _scans.Add((kind, objects, now));
+    }
+
+    protected void OnTrafficIdentity(uint id, TrafficIdentity identity)
+    {
+        if (WorldRole == WorldRole.Source) _identities.Add((id, identity));
+    }
+
+    /// <summary>Captain: the sim connection is gone, so is all its traffic.</summary>
+    protected void OnTrafficLost()
+    {
+        _scans.Clear();
+        _identities.Clear();
+        _trafficLost = true;
+        TrafficSeen = 0;
+    }
+
+    /// <summary>The local sim's time, rate, pause and weather (read about once a second).</summary>
+    protected void OnWorldRead(WorldSample s, long now)
+    {
+        _localWorld = s;
+        WorldFollow.OnLocal(s, now);
+    }
+
+    public void FeedWorld(WorldSync world, long now)
+    {
+        if (_trafficLost)
+        {
+            _trafficLost = false;
+            world.OnTrafficLost();
+        }
+        foreach (var (kind, objects, at) in _scans) world.OnTrafficScan(kind, objects, at);
+        _scans.Clear();
+        foreach (var (id, identity) in _identities) world.OnTrafficIdentity(id, identity);
+        _identities.Clear();
+        if (_latestFlight is { } me) world.OnUserPosition(me);
+        if (_localWorld is { } w) world.OnLocalWorld(w);
+        if (WorldRole == WorldRole.Mirror) world.OnLocalNotice(ForeignTraffic, WorldFollow.WeatherMismatch);
+    }
+
+    private bool ExecuteWorld(SimCommand command, long now)
+    {
+        switch (command)
+        {
+            case SetWorldRole r:
+                var old = WorldRole;
+                if (old == r.Role) return true;
+                WorldRole = r.Role;
+                if (old == WorldRole.Mirror)
+                {
+                    Mirror.Clear();
+                    WorldFollow.Reset();
+                    StepTraffic(now);
+                }
+                if (old == WorldRole.Source) OnTrafficLost();
+                Info(r.Role switch
+                {
+                    WorldRole.Source => "shared world: this sim is the source of AI traffic, time and pause",
+                    WorldRole.Mirror => "shared world: mirroring the Captain's AI traffic, time and pause",
+                    _ => "shared world: off",
+                });
+                OnWorldRoleChanged(old, r.Role, now);
+                return true;
+            case MirrorTraffic m:
+                if (WorldRole == WorldRole.Mirror) Mirror.OnMessage(m.Message, now);
+                return true;
+            case WorldStateUpdate u:
+                if (WorldRole == WorldRole.Mirror) WorldFollow.OnRemote(u.Sample, now);
+                return true;
+            case ClearTraffic:
+                Mirror.Clear();
+                WorldFollow.Reset();
+                StepTraffic(now); // remove them now, not at the next pump
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>Run the mirror and the world follower; concrete bridges call this from <see cref="Pump"/>.</summary>
+    protected void StepWorld(long now)
+    {
+        StepTraffic(now);
+        if (WorldRole != WorldRole.Mirror) return;
+        _worldActions.Clear();
+        WorldFollow.Step(now, _worldActions);
+        foreach (var a in _worldActions)
+        {
+            Info(a switch
+            {
+                SetPause p => p.Paused ? "the Captain paused: pausing" : "the Captain resumed: unpausing",
+                StepSimRate r => $"matching the Captain's sim rate ({(r.Direction > 0 ? "faster" : "slower")})",
+                SetZuluTime t => $"matching the Captain's time: {t.Year}, day {t.DayOfYear}, {t.Hour:00}:{t.Minute:00}Z",
+                _ => a.ToString(),
+            });
+            ApplyWorldAction(a);
+        }
+    }
+
+    /// <summary>Spawn, move and remove injected aircraft as the mirror says. Never skipped: removals must happen.</summary>
+    protected void StepTraffic(long now)
+    {
+        _trafficActions.Clear();
+        Mirror.Step(now, _latestFlight, _trafficActions);
+        foreach (var a in _trafficActions)
+        {
+            switch (a)
+            {
+                case SpawnTraffic s: SpawnTrafficObject(s, now); break;
+                case MoveTraffic m: MoveTrafficObject(m.LocalId, m.Pose, now); break;
+                case SetTrafficAppearance ap: SetTrafficObjectAppearance(ap.LocalId, ap.Lights, ap.GearDown); break;
+                case RemoveTraffic r: RemoveTrafficObject(r.LocalId); break;
+            }
+        }
+    }
+
+    protected virtual void OnWorldRoleChanged(WorldRole old, WorldRole role, long now) { }
+    /// <summary>Create the object; answer with <c>Mirror.OnSpawned</c>/<c>Mirror.OnSpawnFailed</c> for <see cref="SpawnTraffic.Token"/>.</summary>
+    protected virtual void SpawnTrafficObject(SpawnTraffic spawn, long now) => Mirror.OnSpawnFailed(spawn.Token);
+    protected virtual void MoveTrafficObject(uint localId, FlightSample pose, long now) { }
+    protected virtual void SetTrafficObjectAppearance(uint localId, ushort lights, bool gearDown) { }
+    protected virtual void RemoveTrafficObject(uint localId) { }
+    protected virtual void ApplyWorldAction(WorldAction action) { }
 
     /// <summary>
     /// Becoming pilot monitoring: freeze the local flight model and follow. Becoming pilot flying:

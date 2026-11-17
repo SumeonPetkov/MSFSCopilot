@@ -70,6 +70,24 @@ public sealed record AuthorityMsg(AuthorityKind Kind, Authority Authority) : Mes
 /// <summary>Position and motion from the pilot flying, ~30 Hz, sequenced. <see cref="Time"/> is the sender's clock.</summary>
 public sealed record FlightState(Authority Authority, ulong Seq, long Time, FlightSample Sample) : Message;
 
+/// <summary>World (Captain → FO): poses of announced AI aircraft, ~5 Hz, sequenced, small batches. <see cref="Time"/> is the sender's clock.</summary>
+public sealed record TrafficFrame(ulong Seq, long Time, TrafficEntry[] Objects) : Message;
+
+/// <summary>World (Captain → FO): AI aircraft that now exist, with what they are. Reliable.</summary>
+public sealed record TrafficAdded(TrafficInfo[] Objects) : Message;
+
+/// <summary>World (Captain → FO): AI aircraft that no longer exist. Reliable.</summary>
+public sealed record TrafficRemoved(uint[] Ids) : Message;
+
+/// <summary>World (Captain → FO), on every (re)connect: only these ids still exist; drop the rest.</summary>
+public sealed record TrafficReset(uint[] LiveIds) : Message;
+
+/// <summary>World (Captain → FO): time, rate, pause and weather, 1 Hz and on change, sequenced.</summary>
+public sealed record WorldState(ulong Seq, long Time, WorldSample Sample) : Message;
+
+/// <summary>World (FO → Captain): what is wrong with the FO's world (own AI traffic still on, other weather). Reliable, on change.</summary>
+public sealed record WorldNotice(int ForeignTraffic, bool WeatherMismatch) : Message;
+
 public readonly record struct Outgoing(Channel Channel, Message Message);
 
 /// <summary>Instructions from the engine to the simulator adapter.</summary>
@@ -87,3 +105,17 @@ public sealed record FlightStateUpdate(long RemoteTime, FlightSample Sample) : S
 
 /// <summary>This seat became (or stopped being) the pilot flying: freeze/unfreeze physics.</summary>
 public sealed record AuthorityChanged(bool IsPilotFlying, int Epoch) : SimCommand;
+
+public enum WorldRole : byte { None = 0, Source = 1, Mirror = 2 }
+
+/// <summary>Start/stop scanning the world (Captain) or mirroring it (First Officer).</summary>
+public sealed record SetWorldRole(WorldRole Role) : SimCommand;
+
+/// <summary>A traffic message from the Captain for the local <see cref="TrafficMirror"/>.</summary>
+public sealed record MirrorTraffic(Message Message) : SimCommand;
+
+/// <summary>The Captain's time/rate/pause/weather, for the local <see cref="WorldFollower"/>.</summary>
+public sealed record WorldStateUpdate(long RemoteTime, WorldSample Sample) : SimCommand;
+
+/// <summary>Remove every mirrored AI aircraft (session over, or the Captain is gone).</summary>
+public sealed record ClearTraffic : SimCommand;
