@@ -31,6 +31,7 @@ public sealed class SimConnectBridge : SimBridgeBase, IFlightSim
 
     private static readonly string[] FreezeEvents = ["FREEZE_LATITUDE_LONGITUDE_SET", "FREEZE_ALTITUDE_SET", "FREEZE_ATTITUDE_SET"];
     private const uint ReqAircraftState = 2;
+    private const uint ReqSimState = 7, ReqFlightState = 8;
     private const uint ReqEnumInputEvents = 3;
     private const uint ReqCatalogAircraft = 5, ReqCatalogHelicopter = 6;
     private const uint DefAtcId = 33, DefAtcAirline = 34, DefAtcFlightNumber = 35;
@@ -83,6 +84,12 @@ public sealed class SimConnectBridge : SimBridgeBase, IFlightSim
 
     /// <summary>Between MSFS's SimStart and SimStop: the pilot is in an aircraft, not in the menus.</summary>
     public bool IsInFlight { get; private set; }
+
+    /// <summary>The .flt MSFS last reported loading (FlightLoaded), or null if it has not said.</summary>
+    public string? LoadedFlight { get; private set; }
+
+    /// <summary>Counts MSFS's flight and aircraft load notifications, so a caller can tell a load began.</summary>
+    public int LoadActivity { get; private set; }
 
     /// <summary>Installed aircraft and liveries, after <see cref="RequestAircraftCatalog"/>.</summary>
     public event Action<List<(string Title, string Livery)>>? AircraftCatalog;
@@ -325,7 +332,12 @@ public sealed class SimConnectBridge : SimBridgeBase, IFlightSim
                 OnFilenameEvent(r.U32(16), r.AnsiString(24, 260));
                 break;
             case RecvId.SystemState:
-                if (r.U32(12) == ReqAircraftState) OnAircraftPath(r.AnsiString(24, 260));
+                switch (r.U32(12))
+                {
+                    case ReqAircraftState: OnAircraftPath(r.AnsiString(24, 260)); break;
+                    case ReqSimState: IsInFlight = r.U32(16) != 0; break; // connected mid-flight: no SimStart comes
+                    case ReqFlightState: LoadedFlight = NullIfEmpty(r.AnsiString(24, 260)); break;
+                }
                 break;
             case RecvId.SimObjectData:
                 OnData(r);
@@ -368,6 +380,8 @@ public sealed class SimConnectBridge : SimBridgeBase, IFlightSim
         Call(SimConnect_SubscribeToSystemEvent(_h, EvtSimStop, "SimStop"), "subscribe SimStop");
         Call(SimConnect_SubscribeToSystemEvent(_h, EvtAircraftLoaded, "AircraftLoaded"), "subscribe AircraftLoaded");
         Call(SimConnect_SubscribeToSystemEvent(_h, EvtFlightLoaded, "FlightLoaded"), "subscribe FlightLoaded");
+        Call(SimConnect_RequestSystemState(_h, ReqSimState, "Sim"), "request Sim state");
+        Call(SimConnect_RequestSystemState(_h, ReqFlightState, "FlightLoaded"), "request FlightLoaded state");
         Call(SimConnect_AddToDataDefinition(_h, DefTitle, "TITLE", null, DataType.String256, 0, Unused), "read TITLE");
         Call(SimConnect_AddToDataDefinition(_h, DefTitle, "ATC MODEL", null, DataType.String64, 0, Unused), "read ATC MODEL");
 
@@ -409,10 +423,12 @@ public sealed class SimConnectBridge : SimBridgeBase, IFlightSim
         {
             case EvtSimStart:
                 IsInFlight = true;
+                LoadActivity++;
                 RequestAircraftIdentity();
                 return;
             case EvtSimStop:
                 IsInFlight = false;
+                LoadActivity++;
                 return;
         }
         if (_captureByEventId.TryGetValue(eventId, out int v))
@@ -423,10 +439,14 @@ public sealed class SimConnectBridge : SimBridgeBase, IFlightSim
     {
         if (eventId is EvtAircraftLoaded or EvtFlightLoaded)
         {
+            LoadActivity++;
+            if (eventId == EvtFlightLoaded) LoadedFlight = NullIfEmpty(file);
             if (eventId == EvtAircraftLoaded) OnAircraftPath(file);
             RequestAircraftIdentity();
         }
     }
+
+    private static string? NullIfEmpty(string s) => string.IsNullOrWhiteSpace(s) ? null : s;
 
     private void OnAircraftPath(string path)
     {
@@ -781,6 +801,7 @@ public sealed class SimConnectBridge : SimBridgeBase, IFlightSim
         if (_open && _frozen) SetFreeze(false, _now);
         _frozen = false;
         IsInFlight = false;
+        LoadedFlight = null;
         _atcDefined.Clear();
         if (_open) SimConnect_Close(_h);
         _open = false;

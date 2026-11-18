@@ -12,15 +12,31 @@ public sealed record WrittenFlight(string FltPath, string? PlnPath, StartPositio
 /// <summary>
 /// Writes the MSFS flight (.flt) and flight plan (.pln) every pilot in the party loads, so all
 /// seats start with the same aircraft, livery, callsign and route.
-/// Note: the .flt layout follows the documented MSFS 2020 format, which MSFS 2024 still reads;
-/// it is the part of the one-click start that must be confirmed in the live sim.
+/// The .flt layout copies the free flights MSFS 2024 saves itself (MISSIONS\Custom\CustomFlight):
+/// without the free-flight mission scripts ([ObjectFile], [WolfProgram]) MSFS does not start the flight.
 /// </summary>
 public static class FlightFiles
 {
     private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
 
-    public static string FlightsFolder =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SkyLink", "flights");
+    /// <summary>The encoding MSFS uses for .flt files (Latin-1 matches Windows-1252 for every character SkyLink writes).</summary>
+    public static readonly Encoding FltEncoding = Encoding.Latin1;
+
+    /// <summary>
+    /// Where SkyLink saves the flights it loads: MSFS's own MISSIONS\Custom folder. MSFS 2024
+    /// ignores SimConnect_FlightLoad for a .flt anywhere else, without any error (checked live:
+    /// an exact copy of a flight MSFS saved itself loads from there, and not from %LOCALAPPDATA%).
+    /// </summary>
+    public static string FlightsFolder
+    {
+        get
+        {
+            foreach (var cfg in Sim.BridgeInstaller.UserCfgCandidates())
+                if (File.Exists(cfg) && Path.GetDirectoryName(cfg) is { } userFolder)
+                    return Path.Combine(userFolder, "MISSIONS", "Custom", "SkyLink");
+            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SkyLink", "flights");
+        }
+    }
 
     /// <summary>
     /// The start point: the SimBrief origin airport if a plan is loaded, else where the Captain's
@@ -52,33 +68,71 @@ public static class FlightFiles
         string? pln = setup.Plan is { } plan ? plan.PlnXml ?? DirectPln(plan) : null;
         if (pln is not null)
         {
-            plnPath = Path.Combine(folder, "SkyLink.pln");
+            plnPath = Path.Combine(folder, "SkyLink.PLN");
             File.WriteAllText(plnPath, pln, new UTF8Encoding(false));
         }
 
-        string fltPath = Path.Combine(folder, "SkyLink.flt");
-        File.WriteAllText(fltPath, Flt(setup, start, plnPath), new UTF8Encoding(true));
+        string fltPath = Path.Combine(folder, "SkyLink.FLT");
+        // MSFS reads and writes .flt files as Windows-1252 (the degree sign is the single byte 0xB0),
+        // with no byte-order mark: a UTF-8 file garbles the coordinates and the first section name.
+        File.WriteAllText(fltPath, Flt(setup, start, plnPath), FltEncoding);
         return new WrittenFlight(fltPath, plnPath, start);
     }
 
     public static string Flt(FlightSetup s, StartPosition start, string? plnPath)
     {
         var b = new StringBuilder();
-        void Section(string name) => b.Append('[').Append(name).AppendLine("]");
-        void Kv(string k, object? v) => b.Append(k).Append('=').AppendLine(Convert.ToString(v, Inv));
+        void Section(string name) => b.Append('[').Append(name).Append("]\r\n");
+        void Kv(string k, object? v) => b.Append(k).Append('=').Append(Clean(Convert.ToString(v, Inv))).Append("\r\n");
+        void End() => b.Append("\r\n");
 
         string title = s.Plan is { } p ? $"SkyLink {p.Origin}-{p.Destination}" : "SkyLink shared flight";
         Section("Main");
         Kv("Title", title);
         Kv("Description", "Shared-cockpit flight prepared by SkyLink");
-        Kv("MissionType", "FreeFlight");
+        Kv("AppVersion", "12.0.1");
         Kv("FlightVersion", 1);
-        b.AppendLine();
+        Kv("MissionType", "FreeFlight");
+        Kv("FlightType", "NORMAL");
+        End();
+
+        Section("Options");
+        Kv("Sound", "True");
+        Kv("Save", "False");
+        Kv("Titles", "False");
+        End();
 
         Section("Sim.0");
         Kv("Sim", s.AircraftTitle);
         if (s.Livery is { } lv) Kv("Livery", lv);
-        b.AppendLine();
+        Kv("Pilot", "Default");
+        Kv("Copilot", "Default");
+        // MSFS 2024 keeps the ATC identity with the aircraft.
+        if (s.Callsign is { } tail) Kv("TailNumber", tail);
+        if (s.AirlineCallsign is { } airline) Kv("AirlineCallSign", airline);
+        if (s.FlightNumber is { } number) Kv("FlightNumber", number);
+        End();
+
+        // The free-flight mission: the same scripts MSFS 2024 lists in the free flights it saves.
+        Section("ObjectFile");
+        for (int i = 0; i < FreeFlightScripts.Length; i++) Kv($"File.{i}", FreeFlightScripts[i]);
+        End();
+        Section("WolfProgram");
+        Kv("NbFiles", 1);
+        Kv("File.0", @"missions\Asobo\FreeFlights\FreeFlight\FreeFlightMain.wolf");
+        End();
+        if (start.OnGround)
+        {
+            Section("FreeFlight");
+            Kv("FirstFlightState", "PREFLIGHT_GATE");
+            End();
+        }
+
+        Section("Weather");
+        Kv("UseWeatherFile", "False");
+        Kv("UseLiveWeather", "True");
+        Kv("WeatherCanBeLive", "True");
+        End();
 
         Section("SimVars.0");
         Kv("Latitude", Dms(start.LatDeg, 'N', 'S'));
@@ -88,38 +142,56 @@ public static class FlightFiles
         Kv("Bank", 0);
         Kv("Heading", start.HeadingDeg.ToString("0.0", Inv));
         Kv("SimOnGround", start.OnGround ? "True" : "False");
-        Kv("OnGround", start.OnGround ? "True" : "False");
-        b.AppendLine();
+        End();
 
         Section("ATC_Aircraft.0");
         Kv("ActiveFlightPlan", plnPath is null ? "False" : "True");
         Kv("RequestedFlightPlan", "False");
-        if (s.Callsign is { } cs) Kv("TailNumber", cs);
-        if (s.AirlineCallsign is { } al) Kv("AirlineCallSign", al);
-        if (s.FlightNumber is { } fn) Kv("FlightNumber", fn);
-        b.AppendLine();
+        End();
+        // Required whenever [ATC_Aircraft.0] is present: without it MSFS 2024 drops the whole
+        // flight without an error (found live by bisecting against a flight MSFS saved itself).
+        Section("ATC_AircraftManager");
+        Kv("NumberofAircraft", 1);
+        End();
 
         if (plnPath is not null)
         {
             Section("ATC_ActiveFlightPlan.0");
             Kv("path", plnPath);
-            b.AppendLine();
+            End();
             Section("GPS_Engine.1");
             Kv("Filename", plnPath);
-            b.AppendLine();
+            End();
         }
         if (s.Plan is { } plan)
         {
             Section("Departure");
             Kv("ICAO", plan.Origin);
             if (plan.DepartureRunway is { } rw) Kv("RunwayNumber", new string(rw.TakeWhile(char.IsDigit).ToArray()));
-            b.AppendLine();
+            End();
             Section("Arrival");
             Kv("ICAO", plan.Destination);
-            b.AppendLine();
+            End();
         }
         return b.ToString();
     }
+
+    private static readonly string[] FreeFlightScripts =
+    [
+        @"Missions\Asobo\FreeFlights\FreeFlight\FreeFlight",
+        @"Missions\Asobo\FreeFlights\FreeFlight\Generic_Logic_Pause",
+        @"missions\Asobo\FreeFlights\FreeFlight\Generic_Logic_MissionFailed",
+        @"Missions\Asobo\FreeFlights\FreeFlight\ToolBarSettings",
+        @"Missions\Asobo\FreeFlights\FreeFlight\FreeFlight_Services",
+        @"Missions\Asobo\FreeFlights\FreeFlight\Generic_Logic_FlightPath",
+        @"Missions\Asobo\FreeFlights\FreeFlight\Freeflight_BackOnTrack",
+        @"missions\Asobo\SR\Common\Generic\Utilities\Detent_Notif_Mgr",
+        @"missions\Asobo\SR\Common\Generic\FullFlight\FullFlightOverride",
+    ];
+
+    /// <summary>A value on one line, in characters a Windows-1252 file can hold.</summary>
+    private static string Clean(string? v) =>
+        new((v ?? "").Select(c => c is '\r' or '\n' ? ' ' : c > 0xFF ? '?' : c).ToArray());
 
     /// <summary>A direct origin-to-destination MSFS flight plan, when SimBrief did not provide one.</summary>
     public static string DirectPln(SimBriefPlan p)

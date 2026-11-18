@@ -19,6 +19,8 @@ public static class Program
           skylink lint [DIR]                            validate aircraft definitions
           skylink install-bridge [--dry-run]            install the in-sim bridge module into MSFS
           skylink watch [--seconds N]                   print every cockpit event SkyLink catches (e.g. ATC replies)
+          skylink load-flight --aircraft TITLE --lat D --lon D [--livery L] [--alt FT] [--hdg DEG] [--seconds N]
+                                                        write a SkyLink .flt, load it in MSFS and report what happens
 
         options:
           --defs DIR         definitions folder (default: the one shipped with SkyLink)
@@ -46,6 +48,7 @@ public static class Program
                 "probe" => Probe(a),
                 "install-bridge" => InstallBridge(a),
                 "watch" => Watch(a),
+                "load-flight" => LoadFlight(a),
                 "host" => RunSession(a, host: true),
                 "join" => RunSession(a, host: false),
                 _ => Fail($"unknown command '{args[0]}'\n\n{Usage}"),
@@ -74,6 +77,56 @@ public static class Program
         return errors == 0 ? 0 : 1;
     }
 
+    private static int LoadFlight(Args a)
+    {
+        string fltPath = a.Get("file") ?? WriteTestFlight(a);
+        using var bridge = new SimConnectBridge(LoadCatalog(a));
+        bridge.Log += m => Console.WriteLine($"  [{DateTime.Now:HH:mm:ss}] {m}");
+        int seconds = a.GetInt("seconds") ?? 240;
+        long t0 = Environment.TickCount64;
+        bool requested = false;
+        var last = (false, (string?)null, -1, (string?)null);
+        var end = DateTime.UtcNow.AddSeconds(seconds);
+        while (DateTime.UtcNow < end)
+        {
+            bridge.Pump(Environment.TickCount64 - t0 + 1);
+            bridge.DataAvailable.WaitOne(20);
+            if (!requested && bridge.IsConnected && Environment.TickCount64 - t0 > 3000)
+            {
+                requested = true;
+                Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] SimConnect_FlightLoad({fltPath})");
+                bridge.LoadFlight(fltPath);
+            }
+            var now = (bridge.IsInFlight, bridge.AircraftTitle, bridge.LoadActivity, bridge.LoadedFlight);
+            if (now != last)
+            {
+                Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] in flight={now.Item1} aircraft='{now.Item2}' load activity={now.Item3} flight file={now.Item4 ?? "-"}");
+                last = now;
+            }
+        }
+        return 0;
+    }
+
+    private static string WriteTestFlight(Args a)
+    {
+        string title = a.Get("aircraft") ?? throw new ArgumentException("--aircraft TITLE (or --file FLT) is required");
+        double D(string k) => double.Parse(a.Get(k) ?? throw new ArgumentException($"--{k} is required"), System.Globalization.CultureInfo.InvariantCulture);
+        double Opt(string k, double d) => a.Get(k) is { } v ? double.Parse(v, System.Globalization.CultureInfo.InvariantCulture) : d;
+        var setup = Lobby.FlightSetup.Empty with { AircraftTitle = title, Livery = a.Get("livery"), Callsign = a.Get("callsign") };
+        if (a.Get("from") is { } from && a.Get("to") is { } to)
+            setup = setup with
+            {
+                // A direct plan, like SkyLink writes when SimBrief gave no .pln.
+                Plan = new Lobby.SimBriefPlan(from, to, null, null, "DCT", 30000, null, null, null, null, null,
+                    D("lat"), D("lon"), (int)Opt("alt", 0), D("to-lat"), D("to-lon"), (int)Opt("to-alt", 0),
+                    a.Get("runway"), null, null, null, null, "cli", DateTimeOffset.UtcNow),
+            };
+        var start = new Lobby.StartPosition(D("lat"), D("lon"), Opt("alt", 0), Opt("hdg", 0), true, "cli");
+        var written = Lobby.FlightFiles.Write("cli-test", setup, start);
+        Console.WriteLine($"wrote {written.FltPath}");
+        return written.FltPath;
+    }
+
     private static int Probe(Args a)
     {
         var catalog = LoadCatalog(a);
@@ -91,6 +144,7 @@ public static class Program
         Console.WriteLine();
         Console.WriteLine($"status:     {bridge.Status}");
         Console.WriteLine($"title:      {bridge.AircraftTitle}");
+        Console.WriteLine($"in flight:  {bridge.IsInFlight} (flight file: {bridge.LoadedFlight ?? "not reported"})");
         Console.WriteLine($"ATC model:  {bridge.AircraftAtcModel}");
         Console.WriteLine($"path:       {bridge.AircraftPath}");
         if (bridge.Definition is not { } def) return Fail("no aircraft definition active");

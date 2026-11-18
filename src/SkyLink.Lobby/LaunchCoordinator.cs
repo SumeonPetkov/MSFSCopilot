@@ -16,7 +16,16 @@ public enum LaunchStage { Idle, Preparing, StartingSim, LoadingFlight, SettingUp
 public sealed class LaunchCoordinator
 {
     public static readonly TimeSpan SimStartTimeout = TimeSpan.FromMinutes(10);
-    public static readonly TimeSpan LoadTimeout = TimeSpan.FromMinutes(4);
+    public static readonly TimeSpan LoadTimeout = TimeSpan.FromMinutes(6);
+
+    /// <summary>
+    /// SimConnect answers while MSFS is still booting, long before the main menu can load a flight,
+    /// and a load sent too early is dropped without an error. So after SkyLink starts MSFS it waits
+    /// this long, and it repeats a load request that MSFS showed no sign of starting.
+    /// </summary>
+    public TimeSpan LoadSettle { get; init; } = TimeSpan.FromSeconds(20);
+    public TimeSpan LoadRetryAfter { get; init; } = TimeSpan.FromSeconds(20);
+    public const int MaxLoadAttempts = 8;
     public static readonly TimeSpan ConnectTimeout = TimeSpan.FromMinutes(2);
 
     private readonly SimHost _host;
@@ -28,6 +37,8 @@ public sealed class LaunchCoordinator
     private DateTimeOffset _stageSince;
     private DateTimeOffset _loadRequestedAt;
     private bool _loadRequested;
+    private int _loadAttempts;
+    private int _activityAtRequest;
     private bool _launchRequested;
     private (bool, string?, bool, string?) _lastReported;
     private DateTimeOffset _lastReportAt;
@@ -120,22 +131,36 @@ public sealed class LaunchCoordinator
                 break;
 
             case LaunchStage.LoadingFlight:
-                if (!_loadRequested)
+            {
+                string flt = _flight!.FltPath;
+                bool ours = IsSameFile(sim.LoadedFlight, flt);
+                bool loadStarted = sim.LoadActivity != _activityAtRequest;
+                if (_loadRequested && sim.InFlight && now - _loadRequestedAt > TimeSpan.FromSeconds(1)
+                    && (ours || (loadStarted && sim.Aircraft == s.Setup.AircraftTitle)))
+                {
+                    Enter(LaunchStage.SettingUp);
+                    break;
+                }
+                bool settled = !_launchRequested || now - _stageSince >= LoadSettle;
+                bool retry = _loadRequested && !loadStarted && !ours && now - _loadRequestedAt >= LoadRetryAfter && _loadAttempts < MaxLoadAttempts;
+                if (settled && (!_loadRequested || retry))
                 {
                     _loadRequested = true;
                     _loadRequestedAt = now;
-                    string flt = _flight!.FltPath;
+                    _activityAtRequest = sim.LoadActivity;
+                    _loadAttempts++;
                     _host.Post(() => _host.Sim.LoadFlight(flt));
-                    Log?.Invoke($"loading {s.Setup.AircraftTitle} ({s.Setup.Livery})");
+                    Log?.Invoke(_loadAttempts == 1
+                        ? $"loading {s.Setup.AircraftTitle} ({s.Setup.Livery})"
+                        : $"MSFS has not started loading yet: asking again (attempt {_loadAttempts})");
                     break;
                 }
-                // Loaded once MSFS reports the chosen aircraft in flight (and the load had time to begin).
-                if (sim.InFlight && sim.Aircraft == s.Setup.AircraftTitle && now - _loadRequestedAt > TimeSpan.FromSeconds(1))
-                    Enter(LaunchStage.SettingUp);
-                else if (now - _stageSince > LoadTimeout)
-                    Fail($"MSFS did not load the flight (in flight: {sim.InFlight}, aircraft: {sim.Aircraft ?? "none"})");
+                if (now - _stageSince > LoadTimeout)
+                    Fail(sim.LoadActivity == _activityAtRequest
+                        ? "MSFS never started loading the flight (is it at the main menu?)"
+                        : $"MSFS did not finish loading the flight (in flight: {sim.InFlight}, aircraft: {sim.Aircraft ?? "none"})");
                 break;
-
+            }
             case LaunchStage.SettingUp:
             {
                 var setup = s.Setup;
@@ -195,6 +220,13 @@ public sealed class LaunchCoordinator
         if (party.IsConnected) party.Send(new UpdateStatus(sim.Connected, sim.Aircraft, Stage == LaunchStage.InCockpit, stage));
     }
 
+    private static bool IsSameFile(string? reported, string path)
+    {
+        if (string.IsNullOrWhiteSpace(reported)) return false;
+        try { return string.Equals(Path.GetFullPath(reported), Path.GetFullPath(path), StringComparison.OrdinalIgnoreCase); }
+        catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException) { return false; }
+    }
+
     private void Enter(LaunchStage stage)
     {
         Stage = stage;
@@ -218,6 +250,7 @@ public sealed class LaunchCoordinator
         _session = null;
         _flight = null;
         _loadRequested = false;
+        _loadAttempts = 0;
         _launchRequested = false;
     }
 }

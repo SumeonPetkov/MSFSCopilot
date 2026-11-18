@@ -63,7 +63,10 @@ public sealed class PartyFlowTests(ITestOutputHelper output)
             Sim = sim,
             Host = host,
             Discovery = disc,
-            Launch = new LaunchCoordinator(host, flightPort, isSimRunning: () => true, launchSim: () => "fake"),
+            Launch = new LaunchCoordinator(host, flightPort, isSimRunning: () => true, launchSim: () => "fake")
+            {
+                LoadRetryAfter = TimeSpan.FromSeconds(2),
+            },
         };
         app.Launch.Log += m => app.Log.Add(m);
         host.Log += m => app.Log.Add(m);
@@ -126,7 +129,9 @@ public sealed class PartyFlowTests(ITestOutputHelper output)
                                    && a.Party.State?.Setup.Plan?.Destination == "LFPG", 5000, a, b), "setup did not sync");
         Assert.Null(a.Party.CanStart());
 
-        // 5) One click.
+        // 5) One click. The First Officer's MSFS drops the first load request without a word, as
+        // MSFS does while it is still booting to the main menu: SkyLink must ask again.
+        b.Sim.IgnoreLoads = 1;
         var start = FlightFiles.ChooseStart(a.Party.State!.Setup, null)!;
         a.Party.Send(new StartFlight(start));
         bool seated = RunUntil(() => a.Party.State?.Phase == PartyPhase.InFlight
@@ -140,7 +145,9 @@ public sealed class PartyFlowTests(ITestOutputHelper output)
         Assert.Equal("A320neo V2", b.Sim.AircraftTitle);
         Assert.Equal(("DLH4AB", "LUFTHANSA", "4"), b.Sim.Callsign);
         Assert.NotNull(b.Sim.LastPlanLoaded);
-        Assert.Contains("Livery=Lufthansa", File.ReadAllText(b.Sim.LastFlightLoaded!));
+        Assert.Contains("Livery=Lufthansa", File.ReadAllText(b.Sim.LastFlightLoaded!, FlightFiles.FltEncoding));
+        Assert.Equal(b.Sim.LastFlightLoaded, b.Sim.LoadedFlight);
+        Assert.Contains(b.Log, l => l.Contains("asking again"));
         // The Captain hosts the cockpit and flies; the First Officer follows.
         Assert.True(a.Sim.IsPilotFlying);
         Assert.False(b.Sim.IsPilotFlying);

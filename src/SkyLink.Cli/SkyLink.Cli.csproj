@@ -6,6 +6,7 @@
     <ProjectReference Include="..\SkyLink.Net\SkyLink.Net.csproj" />
     <ProjectReference Include="..\SkyLink.Sim\SkyLink.Sim.csproj" />
     <ProjectReference Include="..\SkyLink.Session\SkyLink.Session.csproj" />
+    <ProjectReference Include="..\SkyLink.Lobby\SkyLink.Lobby.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

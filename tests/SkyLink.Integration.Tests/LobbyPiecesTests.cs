@@ -44,7 +44,14 @@ public sealed class LobbyPiecesTests
         try
         {
             var written = FlightFiles.Write("PARTY1", setup, start, dir);
-            string flt = File.ReadAllText(written.FltPath);
+            byte[] raw = File.ReadAllBytes(written.FltPath);
+            Assert.Equal((byte)'[', raw[0]); // no byte-order mark, as MSFS writes them
+            Assert.Contains((byte)0xB0, raw); // the degree sign is one Windows-1252 byte, not UTF-8
+            string flt = FlightFiles.FltEncoding.GetString(raw);
+            Assert.Contains("[Main]" + (char)13 + (char)10, flt); // Windows line endings
+            Assert.Contains("[ObjectFile]", flt); // the free-flight mission scripts MSFS needs to start the flight
+            Assert.Contains("[ATC_AircraftManager]", flt); // without it MSFS 2024 silently drops the flight
+            Assert.Contains(@"File.0=missions\Asobo\FreeFlights\FreeFlight\FreeFlightMain.wolf", flt);
             Assert.Contains("Sim=A320neo V2", flt);
             Assert.Contains("Livery=Lufthansa", flt);
             Assert.Contains("Latitude=N50° 2' 0.00\"", flt);

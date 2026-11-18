@@ -8,6 +8,12 @@ public interface IFlightSim : ISimBridge
 {
     bool IsConnected { get; }
     bool IsInFlight { get; }
+
+    /// <summary>The .flt the sim last reported loading, if it said.</summary>
+    string? LoadedFlight { get; }
+
+    /// <summary>Increases whenever the sim reports flight or aircraft loading activity.</summary>
+    int LoadActivity { get; }
     string? AircraftTitle { get; }
     FlightSample? LatestFlight { get; }
     string ModuleStatus { get; }

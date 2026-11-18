@@ -16,7 +16,9 @@ public sealed record SimSnapshot(
     bool PilotFlying,
     bool Following,
     string Module,
-    FlightSample? Position);
+    FlightSample? Position,
+    string? LoadedFlight = null,
+    int LoadActivity = 0);
 
 /// <summary>
 /// Owns the simulator connection for the whole app lifetime, on its own thread. In the lobby it
@@ -137,7 +139,8 @@ public sealed class SimHost : IDisposable
     {
         bool pf = Sim is SimBridgeBase b ? b.IsPilotFlying : true;
         return new SimSnapshot(Sim.IsConnected, Sim.IsInFlight, Sim.AircraftTitle, Sim.Status, Sim.Definition?.Name,
-            Sim.Match?.IsFallback ?? false, pf, Sim.IsFollowing, Sim.ModuleStatus, Sim.LatestFlight);
+            Sim.Match?.IsFallback ?? false, pf, Sim.IsFollowing, Sim.ModuleStatus, Sim.LatestFlight,
+            Sim.LoadedFlight, Sim.LoadActivity);
     }
 
     public void Dispose()

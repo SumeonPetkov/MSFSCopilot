@@ -68,6 +68,11 @@ public sealed class FakeSimBridge : SimBridgeBase, IFlightSim
     public string ModuleStatus => "fake";
     public bool IsFollowing => !IsPilotFlying && Follower.HasData;
     public string? LastFlightLoaded { get; private set; }
+    public string? LoadedFlight { get; private set; }
+    public int LoadActivity { get; private set; }
+
+    /// <summary>Like MSFS still booting: this many load requests are ignored without any error.</summary>
+    public int IgnoreLoads { get; set; }
     public string? LastPlanLoaded { get; private set; }
     public (string? AtcId, string? Airline, string? FlightNumber) Callsign { get; private set; }
     public event Action<List<(string Title, string Livery)>>? AircraftCatalog;
@@ -83,11 +88,13 @@ public sealed class FakeSimBridge : SimBridgeBase, IFlightSim
     public bool LoadFlight(string fltPath)
     {
         LastFlightLoaded = fltPath;
+        if (IgnoreLoads > 0) { IgnoreLoads--; return true; }
         // Read the aircraft and start point back out of the .flt, as MSFS would.
-        string[] lines = File.ReadAllLines(fltPath);
+        string[] lines = File.ReadAllLines(fltPath, System.Text.Encoding.Latin1);
         _loadingTitle = lines.FirstOrDefault(l => l.StartsWith("Sim="))?[4..];
         IsInFlight = false;
         _flightLoadedAt = _now;
+        LoadActivity++;
         return true;
     }
 
@@ -119,6 +126,8 @@ public sealed class FakeSimBridge : SimBridgeBase, IFlightSim
             // The fake "loading screen" is over.
             _flightLoadedAt = -1;
             AircraftTitle = _loadingTitle ?? AircraftTitle;
+            LoadedFlight = LastFlightLoaded;
+            LoadActivity++;
             IsInFlight = true;
         }
         for (int i = 0; i < _pending.Count;)
