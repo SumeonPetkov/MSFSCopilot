@@ -66,7 +66,8 @@ public sealed class LiveWorldTests(ITestOutputHelper output)
         PumpFor(b, clock, 15_000, () => b.LatestFlight is not null && b.AircraftTitle is not null && b.UserObjectId != 0);
         Assert.NotNull(b.LatestFlight);
         var me = b.LatestFlight!.Value;
-        string title = b.AircraftTitle!;
+        // SKYLINK_LIVE_TRAFFIC_TITLE picks another model, e.g. one of MSFS's own AI traffic models.
+        string title = Environment.GetEnvironmentVariable("SKYLINK_LIVE_TRAFFIC_TITLE") is { Length: > 0 } t ? t : b.AircraftTitle!;
 
         // Pretend to be the FO: the "Captain" has one aircraft 300 m ahead, flying the user's heading at 20 kt.
         b.Execute(new SetWorldRole(WorldRole.Mirror), clock.ElapsedMilliseconds);

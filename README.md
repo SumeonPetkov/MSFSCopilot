@@ -293,7 +293,8 @@ SKYLINK_LIVE_FOLLOW=1 dotnet test tests/SkyLink.Integration.Tests --filter Live_
 Shared world, live. With `SKYLINK_LIVE=1`, `--filter LiveWorld` scans the AI traffic and reads
 time, rate, pause and weather. It is read-only. This one **changes the sim**: it creates one AI
 aircraft (a copy of yours) 300 m ahead, moves it for 12 s as a mirrored aircraft, then removes it
-and checks that it is gone. Your aircraft is not touched.
+and checks that it is gone. Your aircraft is not touched. `SKYLINK_LIVE_TRAFFIC_TITLE` picks a
+different model, for example `Asobo PassiveAircraft A320 CEO`, one of MSFS's own AI traffic models.
 
 ```bash
 SKYLINK_LIVE_TRAFFIC=1 dotnet test tests/SkyLink.Integration.Tests --filter One_mirrored_aircraft
