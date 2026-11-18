@@ -9,6 +9,7 @@ namespace SkyLink.App;
 public static class Converters
 {
     public static readonly IValueConverter NotNullToVisible = new Fn(v => v is null || v as string == "" ? Visibility.Collapsed : Visibility.Visible);
+    public static readonly IValueConverter IsNotNull = new Fn(v => v is not null);
     public static readonly IValueConverter ZeroToVisible = new Fn(v => v is 0 ? Visibility.Visible : Visibility.Collapsed);
     public static readonly IValueConverter BannerBackground = new Fn(v => v is true
         ? new SolidColorBrush(Color.FromArgb(0x40, 0xC4, 0x2B, 0x1C))

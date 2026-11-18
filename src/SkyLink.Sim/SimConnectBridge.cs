@@ -148,18 +148,8 @@ public sealed class SimConnectBridge : SimBridgeBase, IFlightSim
     {
         uint req = r.U32(12);
         if (req is not (ReqCatalogAircraft or ReqCatalogHelicopter)) return;
-        uint arraySize = r.U32(16), entry = r.U32(20), outOf = r.U32(24);
-        if (arraySize > 0)
-        {
-            int stride = (r.Length - 28) / (int)arraySize;
-            if (stride < 512) throw new InvalidDataException($"aircraft list entry stride {stride} too small");
-            for (int i = 0; i < arraySize; i++)
-            {
-                int off = 28 + i * stride;
-                string title = r.AnsiString(off, 256);
-                if (title.Length > 0) _aircraftList.Add((title, r.AnsiString(off + 256, 256)));
-            }
-        }
+        uint entry = r.U32(20), outOf = r.U32(24);
+        ReadCatalogEntries(r, _aircraftList);
         if (entry + 1 < outOf) return;
         _catalogDone.Add(req);
         if (_catalogDone.Count < 2) return;
@@ -167,6 +157,26 @@ public sealed class SimConnectBridge : SimBridgeBase, IFlightSim
         Info($"MSFS reports {list.Select(x => x.Title).Distinct().Count()} installed aircraft ({list.Count} liveries)");
         AircraftCatalog?.Invoke(list);
     }
+
+    /// <summary>
+    /// The entries of one SIMCONNECT_RECV_ENUMERATE_SIMOBJECT_AND_LIVERY_LIST page: AircraftTitle[256]
+    /// + LiveryName[256] each, back to back from offset 28. MSFS pads the message past the last
+    /// entry, so the stride is fixed (deriving it from the message size skewed every entry).
+    /// </summary>
+    internal static void ReadCatalogEntries(Recv r, List<(string Title, string Livery)> into)
+    {
+        const int stride = 512;
+        uint arraySize = r.U32(16);
+        if (28 + (long)arraySize * stride > r.Length)
+            throw new InvalidDataException($"aircraft list page of {arraySize} entries does not fit in {r.Length} bytes");
+        for (int i = 0; i < arraySize; i++)
+        {
+            int off = 28 + i * stride;
+            string title = r.AnsiString(off, 256);
+            if (title.Length > 0) into.Add((title, r.AnsiString(off + 256, 256)));
+        }
+    }
+
     private bool _channelReady;
 
     // Bridge module and L-var validation.

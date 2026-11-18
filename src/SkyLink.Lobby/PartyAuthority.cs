@@ -154,7 +154,10 @@ public sealed class PartyAuthority
                 return null;
             }
             case PublishCatalog pc:
-                _catalogs[from] = pc.Aircraft;
+                _catalogs[from] = pc.Aircraft.Select(a => a with
+                {
+                    DisplayName = Clean(a.DisplayName, 128), Developer = Clean(a.Developer, 64), Manufacturer = Clean(a.Manufacturer, 64),
+                }).ToList();
                 Commit(_state with { Members = Replace(me with { CatalogCount = pc.Aircraft.Count }) });
                 RecomputeCatalog();
                 return null;
@@ -228,17 +231,27 @@ public sealed class PartyAuthority
         }
         else
         {
+            // Matched by title and livery name only; the friendly name/developer comes from whichever
+            // PC could resolve it (both PCs then show the same).
             shared = lists[0]!
                 .Where(a => lists.Skip(1).All(l => l!.Any(b => b.Title == a.Title)))
-                .Select(a => new CatalogAircraft(a.Title, a.Liveries
-                    .Where(lv => lists.Skip(1).All(l => l!.First(b => b.Title == a.Title).Liveries.Contains(lv)))
-                    .Order(StringComparer.OrdinalIgnoreCase).ToList()))
+                .Select(a =>
+                {
+                    var same = lists.Select(l => l!.First(b => b.Title == a.Title)).ToList();
+                    return new CatalogAircraft(a.Title,
+                        a.Liveries.Where(lv => same.Skip(1).All(b => b.Liveries.Contains(lv))).Order(StringComparer.OrdinalIgnoreCase).ToList(),
+                        same.Select(b => b.DisplayName).FirstOrDefault(n => n is not null),
+                        same.Select(b => b.Developer).FirstOrDefault(n => n is not null),
+                        same.Select(b => b.Manufacturer).FirstOrDefault(n => n is not null));
+                })
                 .Where(a => a.Liveries.Count > 0)
                 .OrderBy(a => a.Title, StringComparer.OrdinalIgnoreCase)
                 .ToList();
         }
         bool changed = shared.Count != SharedCatalog.Count
-                       || shared.Zip(SharedCatalog).Any(p => p.First.Title != p.Second.Title || !p.First.Liveries.SequenceEqual(p.Second.Liveries));
+                       || shared.Zip(SharedCatalog).Any(p => p.First.Title != p.Second.Title || !p.First.Liveries.SequenceEqual(p.Second.Liveries)
+                                                            || p.First.DisplayName != p.Second.DisplayName || p.First.Developer != p.Second.Developer
+                                                            || p.First.Manufacturer != p.Second.Manufacturer);
         if (!changed) return;
         SharedCatalog = shared;
         Commit(_state with { CatalogVersion = _state.CatalogVersion + 1 });
