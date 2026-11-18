@@ -49,13 +49,13 @@ public sealed class AtcSyncTests
         Assert.True(RunUntil(() => fo.Status.Established && !fo.Status.InitialSync, 8000), "session did not connect");
 
         // The First Officer answers ATC (over a link losing 15% of packets).
-        foSim.UserPress(V("atc_menu_open"), 0);
+        foSim.UserPress(V("atc_window"), 0);
         foSim.UserPress(V("atc_reply_2"), 0);
         Assert.True(RunUntil(() => captainSim.AppliedEvents.Count >= 2, 5000), "the Captain's ATC never got the answer");
         RunUntil(() => false, 1500); // anything extra (a duplicate or an echo) would show up now
 
-        Assert.Equal([(V("atc_menu_open"), 0.0), (V("atc_reply_2"), 0.0)], captainSim.AppliedEvents);
-        Assert.Equal(["atc_menu_open", "atc_reply_2"], captainNotices);
+        Assert.Equal([(V("atc_window"), 0.0), (V("atc_reply_2"), 0.0)], captainSim.AppliedEvents);
+        Assert.Equal(["atc_window", "atc_reply_2"], captainNotices);
         Assert.Empty(foSim.AppliedEvents);  // the FO's own answer is not bounced back to them
         Assert.Empty(foNotices);
 
@@ -69,7 +69,7 @@ public sealed class AtcSyncTests
     }
 
     [Fact]
-    public void Every_aircraft_definition_mirrors_the_atc_menu_and_all_ten_replies()
+    public void Every_aircraft_definition_mirrors_the_atc_window_and_all_ten_replies()
     {
         var catalog = DefinitionCatalog.Load(Cli.Program.FindDefinitions());
         foreach (var def in catalog.Aircraft)
@@ -77,7 +77,7 @@ public sealed class AtcSyncTests
             var atc = def.Vars.Where(v => v.Spec.Group == "atc").ToList();
             Assert.All(atc, v => Assert.Equal(Core.SyncClass.Event, v.Spec.Class));
             Assert.Equal(
-                ["ATC_MENU_OPEN", "ATC_MENU_CLOSE", "ATC_MENU_1", "ATC_MENU_2", "ATC_MENU_3", "ATC_MENU_4", "ATC_MENU_5",
+                ["ATC", "ATC_MENU_1", "ATC_MENU_2", "ATC_MENU_3", "ATC_MENU_4", "ATC_MENU_5",
                  "ATC_MENU_6", "ATC_MENU_7", "ATC_MENU_8", "ATC_MENU_9", "ATC_MENU_0"],
                 atc.Select(v => v.Capture!.Name));
         }

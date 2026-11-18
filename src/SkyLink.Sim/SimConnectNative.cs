@@ -27,8 +27,11 @@ internal static class SimConnectNative
         Open = 2,
         Quit = 3,
         Event = 4,
+        EventObjectAddRemove = 5,
         EventFilename = 6,
         SimObjectData = 8,
+        SimObjectDataBytype = 9,
+        AssignedObjectId = 12,
         SystemState = 15,
         ClientData = 16,
         EnumerateInputEvents = 34,
@@ -38,7 +41,30 @@ internal static class SimConnectNative
         EnumerateSimobjectAndLiveryList = 38,
     }
 
-    public enum SimObjectType : uint { User = 0, All = 1, Aircraft = 2, Helicopter = 3 }
+    public enum SimObjectType : uint { User = 0, All = 1, Aircraft = 2, Helicopter = 3, Boat = 4, Ground = 5 }
+
+    public enum State : uint { Off = 0, On = 1 }
+
+    /// <summary>SIMCONNECT_EXCEPTION values SkyLink reacts to.</summary>
+    public const uint ExceptionCreateObjectFailed = 22;
+    public const uint ExceptionUnrecognizedId = 3;
+
+    /// <summary>RequestDataOnSimObjectType accepts at most this radius.</summary>
+    public const uint MaxRadiusMeters = 200_000;
+
+    /// <summary>SIMCONNECT_DATA_INITPOSITION (passed by value; 1-byte packed, 56 bytes).</summary>
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    public struct InitPosition
+    {
+        public double Latitude;
+        public double Longitude;
+        public double Altitude;
+        public double Pitch;
+        public double Bank;
+        public double Heading;
+        public uint OnGround;
+        public uint Airspeed;
+    }
 
     public enum Period : uint { Never = 0, Once = 1, VisualFrame = 2, SimFrame = 3, Second = 4 }
 
@@ -147,6 +173,18 @@ internal static class SimConnectNative
     public static extern unsafe int SimConnect_SetClientData(IntPtr handle, uint clientDataId, uint defineId, uint flags, uint reserved, uint unitSize, void* data);
 
     [DllImport(Dll, ExactSpelling = true)]
+    public static extern int SimConnect_RequestDataOnSimObjectType(IntPtr handle, uint requestId, uint defineId, uint radiusMeters, SimObjectType type);
+
+    [DllImport(Dll, CharSet = CharSet.Ansi, ExactSpelling = true)]
+    public static extern int SimConnect_AICreateNonATCAircraft_EX1(IntPtr handle, string containerTitle, string livery, string tailNumber, InitPosition initPos, uint requestId);
+
+    [DllImport(Dll, ExactSpelling = true)]
+    public static extern int SimConnect_AIRemoveObject(IntPtr handle, uint objectId, uint requestId);
+
+    [DllImport(Dll, ExactSpelling = true)]
+    public static extern int SimConnect_AIReleaseControl(IntPtr handle, uint objectId, uint requestId);
+
+    [DllImport(Dll, ExactSpelling = true)]
     public static extern int SimConnect_EnumerateInputEvents(IntPtr handle, uint requestId);
 
     [DllImport(Dll, ExactSpelling = true)]
@@ -157,6 +195,19 @@ internal static class SimConnectNative
 
     [DllImport(Dll, ExactSpelling = true)]
     public static extern int SimConnect_SubscribeInputEvent(IntPtr handle, ulong hash);
+}
+
+/// <summary>Byte offsets inside received messages (checked against SimConnect.h by SimConnectHeaderTests).</summary>
+internal static class RecvLayout
+{
+    // SIMCONNECT_RECV_EXCEPTION
+    public const int ExceptionCode = 12, ExceptionSendId = 16, ExceptionIndex = 20;
+    // SIMCONNECT_RECV_EVENT / SIMCONNECT_RECV_EVENT_OBJECT_ADDREMOVE
+    public const int EventId = 16, EventData = 20, AddRemoveObjectType = 24;
+    // SIMCONNECT_RECV_SIMOBJECT_DATA (and _BYTYPE, which adds nothing)
+    public const int DataRequestId = 12, DataObjectId = 16, DataDefineId = 20, DataEntryNumber = 28, DataOutOf = 32, DataDefineCount = 36, Data = 40;
+    // SIMCONNECT_RECV_ASSIGNED_OBJECT_ID
+    public const int AssignedRequestId = 12, AssignedObjectId = 16;
 }
 
 /// <summary>Bounds-checked reader over one received SimConnect message (1-byte packed).</summary>

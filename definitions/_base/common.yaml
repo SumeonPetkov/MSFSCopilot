@@ -100,13 +100,15 @@ groups:
       - { id: ap_alt_mode, class: derived, read: "A:AUTOPILOT ALTITUDE LOCK, Bool",    epsilon: 0.5 }
 
   # ATC: whichever pilot answers, the other pilot's ATC gets the same answer (exactly once, in
-  # order), so both ATCs stay in the same conversation and give the same response. Opening and
-  # closing the ATC menu is mirrored too, so the reply always lands in an open menu.
+  # order), so both ATCs stay in the same conversation and give the same response.
+  # MSFS 2024 has no ATC_MENU_OPEN/ATC_MENU_CLOSE any more (both are unknown names); its ATC window
+  # key is the toggle K:ATC. A toggle is mirrored as a toggle, so if the two windows were in
+  # different states they stay opposite until one pilot toggles once more. Clicking the toolbar
+  # icon may not fire K:ATC at all (only the key binding does).
   - id: atc
     order: 95
     vars:
-      - { id: atc_menu_open,  class: event, capture: { kevent: ATC_MENU_OPEN } }
-      - { id: atc_menu_close, class: event, capture: { kevent: ATC_MENU_CLOSE } }
+      - { id: atc_window,     class: event, capture: { kevent: ATC } }
       - { id: atc_reply_1,    class: event, capture: { kevent: ATC_MENU_1 } }
       - { id: atc_reply_2,    class: event, capture: { kevent: ATC_MENU_2 } }
       - { id: atc_reply_3,    class: event, capture: { kevent: ATC_MENU_3 } }

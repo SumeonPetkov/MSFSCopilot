@@ -145,6 +145,7 @@ public sealed class FakeSimBridge : SimBridgeBase, IFlightSim
         for (int v = 0; v < _values.Length; v++)
             if (Definition!.Vars[v].Spec.Class != SyncClass.Event) OnValue(v, _values[v], now);
         StepFlight(now);
+        StepWorldSim(now);
     }
 
     private void StepFlight(long now)
@@ -172,6 +173,175 @@ public sealed class FakeSimBridge : SimBridgeBase, IFlightSim
         if (TrackMoves) MaxApparentSpeedMps = Math.Max(MaxApparentSpeedMps, FlightFollower.DistanceM(before, Pose) / dt);
         _lastPoseAt = now;
         OnFlightRead(Pose);
+    }
+
+    // ---- shared world: a pretend sim with AI traffic (as the Captain) or injected copies (as the FO)
+
+    public sealed class FakeAi
+    {
+        public required TrafficIdentity Identity;
+        public FlightSample Pose;
+        public double TurnRateDps;
+        public ushort Lights;
+        public bool GearDown;
+        public List<(long T, FlightSample P)> History { get; } = [];
+    }
+
+    public sealed class Injected
+    {
+        public required SpawnTraffic Spawn;
+        public FlightSample Pose;
+        public ushort Lights;
+        public bool GearDown;
+        public int Moves;
+    }
+
+    /// <summary>AI aircraft flying in this fake sim (the Captain's MSFS traffic).</summary>
+    public Dictionary<uint, FakeAi> AiTraffic { get; } = [];
+    /// <summary>Objects SkyLink created in this fake sim (the FO's mirrored traffic).</summary>
+    public Dictionary<uint, Injected> InjectedTraffic { get; } = [];
+    public int SpawnsRequested { get; private set; }
+    public int SpawnsFailed { get; private set; }
+    public int Removals { get; private set; }
+    /// <summary>Removals of ids that were not (or no longer) injected: a bookkeeping bug if ever non-zero.</summary>
+    public int BogusRemovals { get; private set; }
+    public int TrafficScanIntervalMs { get; set; } = 200;
+    /// <summary>Spawns only succeed for installed titles (<see cref="InstalledAircraft"/>), like MSFS.</summary>
+    public bool RequireInstalledModels { get; set; } = true;
+    /// <summary>The FO forgot to turn MSFS traffic off: this many AI aircraft SkyLink did not create.</summary>
+    public int ForeignAi { get; set; }
+
+    public WorldSample WorldNow { get; set; } = new(WorldSample.ToUnix(12 * 3600, 200, 2026), 1, false, 1013, 270, 10, 15);
+    public List<WorldAction> AppliedWorldActions { get; } = [];
+
+    private readonly List<(long At, SpawnTraffic Spawn, bool Ok)> _spawning = [];
+    private uint _nextAiId = 100;
+    private uint _nextLocalId = 10_000;
+    private long _lastScan = long.MinValue / 2;
+    private long _lastWorldRead = long.MinValue / 2;
+    private readonly HashSet<uint> _identified = [];
+    private long _lastWorldStep = -1;
+
+    public uint AddAi(TrafficIdentity identity, FlightSample pose, double turnRateDps = 0)
+    {
+        uint id = _nextAiId++;
+        AiTraffic[id] = new FakeAi { Identity = identity, Pose = pose, TurnRateDps = turnRateDps };
+        return id;
+    }
+
+    /// <summary>MSFS reuses object ids: put a different aircraft under an existing id.</summary>
+    public void ReplaceAi(uint id, TrafficIdentity identity)
+    {
+        AiTraffic[id].Identity = identity;
+        _identified.Remove(id);
+    }
+
+    protected override void OnWorldRoleChanged(WorldRole old, WorldRole role, long now)
+    {
+        if (role == WorldRole.Mirror) Mirror.SetInstalledModels(RequireInstalledModels ? InstalledAircraft : null);
+        _identified.Clear();
+    }
+
+    private void StepWorldSim(long now)
+    {
+        if (_lastWorldStep < 0) _lastWorldStep = now;
+        double dt = (now - _lastWorldStep) / 1000.0;
+        _lastWorldStep = now;
+        if (!WorldNow.Paused) WorldNow = WorldNow with { ZuluUnixSec = WorldNow.ZuluUnixSec + dt * WorldNow.SimRate };
+
+        foreach (var ai in AiTraffic.Values)
+        {
+            if (dt <= 0 || WorldNow.Paused) continue;
+            double speed = Math.Sqrt(ai.Pose.VWorldEastFps * ai.Pose.VWorldEastFps + ai.Pose.VWorldNorthFps * ai.Pose.VWorldNorthFps);
+            double hdg = (ai.Pose.HeadingDeg + ai.TurnRateDps * dt + 360) % 360;
+            ai.Pose = FlightFollower.Extrapolate(ai.Pose, dt) with
+            {
+                HeadingDeg = hdg,
+                VWorldEastFps = speed * Math.Sin(hdg * Math.PI / 180),
+                VWorldNorthFps = speed * Math.Cos(hdg * Math.PI / 180),
+            };
+            ai.History.Add((now, ai.Pose));
+            if (ai.History.Count > 2000) ai.History.RemoveRange(0, 1000);
+        }
+
+        if (now - _lastWorldRead >= 1000)
+        {
+            _lastWorldRead = now;
+            OnWorldRead(WorldNow, now);
+        }
+
+        if (WorldRole == WorldRole.Source && now - _lastScan >= TrafficScanIntervalMs)
+        {
+            _lastScan = now;
+            foreach (var kind in new[] { TrafficKind.Airplane, TrafficKind.Helicopter })
+                OnTrafficScan(kind, [.. AiTraffic.Where(kv => kv.Value.Identity.Kind == kind)
+                    .Select(kv => (kv.Key, new TrafficSample(kv.Value.Pose, kv.Value.Lights, kv.Value.GearDown)))], now);
+            // Like the real bridge: identify an aircraft when its id (re)appears.
+            foreach (var (id, ai) in AiTraffic)
+                if (_identified.Add(id)) OnTrafficIdentity(id, ai.Identity);
+            _identified.IntersectWith(AiTraffic.Keys);
+            TrafficSeen = AiTraffic.Count;
+        }
+
+        for (int i = 0; i < _spawning.Count;)
+        {
+            var (at, spawn, ok) = _spawning[i];
+            if (at > now) { i++; continue; }
+            _spawning.RemoveAt(i);
+            if (!ok)
+            {
+                SpawnsFailed++;
+                Mirror.OnSpawnFailed(spawn.Token);
+                continue;
+            }
+            uint local = _nextLocalId++;
+            InjectedTraffic[local] = new Injected { Spawn = spawn, Pose = spawn.Pose };
+            Mirror.OnSpawned(spawn.Token, local);
+        }
+        ForeignTraffic = WorldRole == WorldRole.Mirror ? ForeignAi : 0;
+        StepWorld(now);
+    }
+
+    protected override void SpawnTrafficObject(SpawnTraffic spawn, long now)
+    {
+        SpawnsRequested++;
+        bool installed = !RequireInstalledModels || InstalledAircraft.Any(m => m.Title == spawn.Title && (spawn.Livery.Length == 0 || m.Livery == spawn.Livery));
+        _spawning.Add((now + _rng.Next(20, 300), spawn, installed));
+    }
+
+    protected override void MoveTrafficObject(uint localId, FlightSample pose, long now)
+    {
+        if (!InjectedTraffic.TryGetValue(localId, out var o)) return;
+        o.Pose = pose;
+        o.Moves++;
+    }
+
+    protected override void SetTrafficObjectAppearance(uint localId, ushort lights, bool gearDown)
+    {
+        if (!InjectedTraffic.TryGetValue(localId, out var o)) return;
+        o.Lights = lights;
+        o.GearDown = gearDown;
+    }
+
+    protected override void RemoveTrafficObject(uint localId)
+    {
+        if (InjectedTraffic.Remove(localId)) Removals++;
+        else BogusRemovals++;
+    }
+
+    protected override void ApplyWorldAction(WorldAction action)
+    {
+        AppliedWorldActions.Add(action);
+        WorldNow = action switch
+        {
+            SetPause p => WorldNow with { Paused = p.Paused },
+            StepSimRate r => WorldNow with { SimRate = Math.Clamp(WorldNow.SimRate * (r.Direction > 0 ? 2 : 0.5), 0.25, 128) },
+            SetZuluTime t => WorldNow with
+            {
+                ZuluUnixSec = WorldSample.ToUnix(t.Hour * 3600 + t.Minute * 60, t.DayOfYear, t.Year),
+            },
+            _ => WorldNow,
+        };
     }
 
     /// <summary>The flying seat's clock time that the current <see cref="Pose"/> was rendered for.</summary>
@@ -255,5 +425,10 @@ public sealed class FakeSimBridge : SimBridgeBase, IFlightSim
         return data;
     }
 
-    public override void Dispose() { }
+    public override void Dispose()
+    {
+        // Like the real bridge: SkyLink exiting removes every object it created.
+        Mirror.Clear();
+        StepTraffic(_now);
+    }
 }

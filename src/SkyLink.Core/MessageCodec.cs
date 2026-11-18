@@ -20,7 +20,15 @@ public static class MessageCodec
         ControlFrame = 6,
         AuthorityMsg = 7,
         FlightState = 8,
+        TrafficFrame = 9,
+        TrafficAdded = 10,
+        TrafficRemoved = 11,
+        TrafficReset = 12,
+        WorldState = 13,
+        WorldNotice = 14,
     }
+
+    private const int MaxString = 255;
 
     public static byte[] Encode(Message message)
     {
@@ -101,6 +109,69 @@ public static class MessageCodec
                 w.U8(f.OnGround ? (byte)1 : (byte)0);
                 break;
             }
+            case TrafficFrame m:
+                w.U8((byte)Tag.TrafficFrame);
+                w.U64(m.Seq);
+                w.I64(m.Time);
+                w.Count(m.Objects.Length);
+                foreach (var e in m.Objects)
+                {
+                    // Lat/lon need doubles (cm); everything else fits a float. Body rates are not sent.
+                    var p = e.Sample.Pose;
+                    w.U32(e.Id);
+                    w.U16(e.AgeMs);
+                    w.F64(p.LatDeg);
+                    w.F64(p.LonDeg);
+                    foreach (double d in new[] { p.AltFt, p.PitchDeg, p.BankDeg, p.HeadingDeg, p.VWorldEastFps, p.VWorldUpFps, p.VWorldNorthFps })
+                        w.F32(d);
+                    w.U16(e.Sample.Lights);
+                    w.U8((byte)((p.OnGround ? 1 : 0) | (e.Sample.GearDown ? 2 : 0)));
+                }
+                break;
+            case TrafficAdded m:
+                w.U8((byte)Tag.TrafficAdded);
+                w.Count(m.Objects.Length);
+                foreach (var o in m.Objects)
+                {
+                    var i = o.Identity;
+                    w.U32(o.Id);
+                    w.U8((byte)i.Kind);
+                    w.Str(i.Title);
+                    w.Str(i.Livery);
+                    w.Str(i.AtcId);
+                    w.Str(i.AtcModel);
+                    w.Str(i.Airline);
+                    w.Str(i.FlightNumber);
+                }
+                break;
+            case TrafficRemoved m:
+                w.U8((byte)Tag.TrafficRemoved);
+                w.U32Array(m.Ids);
+                break;
+            case TrafficReset m:
+                w.U8((byte)Tag.TrafficReset);
+                w.U32Array(m.LiveIds);
+                break;
+            case WorldState m:
+            {
+                w.U8((byte)Tag.WorldState);
+                w.U64(m.Seq);
+                w.I64(m.Time);
+                var s = m.Sample;
+                w.F64(s.ZuluUnixSec);
+                w.F64(s.SimRate);
+                w.U8(s.Paused ? (byte)1 : (byte)0);
+                w.F64(s.SeaLevelPressureMb);
+                w.F64(s.WindDirDeg);
+                w.F64(s.WindKts);
+                w.F64(s.TempC);
+                break;
+            }
+            case WorldNotice m:
+                w.U8((byte)Tag.WorldNotice);
+                w.I32(m.ForeignTraffic);
+                w.U8(m.WeatherMismatch ? (byte)1 : (byte)0);
+                break;
             default:
                 throw new ArgumentException($"Unknown message type {message.GetType().Name}.");
         }
@@ -122,6 +193,13 @@ public static class MessageCodec
             Tag.FlightState => new FlightState(r.Authority(), r.U64(), r.I64(), new FlightSample(
                 r.F64(), r.F64(), r.F64(), r.F64(), r.F64(), r.F64(), r.F64(), r.F64(), r.F64(),
                 r.F64(), r.F64(), r.F64(), r.F64(), r.F64(), r.F64(), r.Bool())),
+            Tag.TrafficFrame => new TrafficFrame(r.U64(), r.I64(), r.Array(static (ref Reader x) => x.TrafficEntry())),
+            Tag.TrafficAdded => new TrafficAdded(r.Array(static (ref Reader x) => new TrafficInfo(x.U32(),
+                new TrafficIdentity(x.TrafficKind(), x.Str(), x.Str(), x.Str(), x.Str(), x.Str(), x.Str())))),
+            Tag.TrafficRemoved => new TrafficRemoved(r.Array(static (ref Reader x) => x.U32())),
+            Tag.TrafficReset => new TrafficReset(r.Array(static (ref Reader x) => x.U32())),
+            Tag.WorldState => new WorldState(r.U64(), r.I64(), new WorldSample(r.F64(), r.F64(), r.Bool(), r.F64(), r.F64(), r.F64(), r.F64())),
+            Tag.WorldNotice => new WorldNotice(r.I32(), r.Bool()),
             var t => throw new InvalidDataException($"Unknown message tag {(byte)t}."),
         };
         if (!r.AtEnd) throw new InvalidDataException("Trailing bytes after message.");
@@ -144,6 +222,25 @@ public static class MessageCodec
         public void U8(byte v) => Take(1)[0] = v;
         public void U16(int v) => BinaryPrimitives.WriteUInt16LittleEndian(Take(2), checked((ushort)v));
         public void I32(int v) => BinaryPrimitives.WriteInt32LittleEndian(Take(4), v);
+        public void U32(uint v) => BinaryPrimitives.WriteUInt32LittleEndian(Take(4), v);
+        public void F32(double v) => BinaryPrimitives.WriteSingleLittleEndian(Take(4), (float)v);
+
+        /// <summary>UTF-8, length-prefixed, cut at <see cref="MaxString"/> bytes on a character boundary.</summary>
+        public void Str(string s)
+        {
+            var bytes = System.Text.Encoding.UTF8.GetBytes(s);
+            int n = Math.Min(bytes.Length, MaxString);
+            while (n > 0 && n < bytes.Length && (bytes[n] & 0xC0) == 0x80) n--;
+            U8((byte)n);
+            bytes.AsSpan(0, n).CopyTo(Take(n));
+        }
+
+        public void U32Array(uint[] a)
+        {
+            Count(a.Length);
+            foreach (var v in a) U32(v);
+        }
+
         public void I64(long v) => BinaryPrimitives.WriteInt64LittleEndian(Take(8), v);
         public void U64(ulong v) => BinaryPrimitives.WriteUInt64LittleEndian(Take(8), v);
         public void F64(double v) => BinaryPrimitives.WriteDoubleLittleEndian(Take(8), v);
@@ -201,6 +298,40 @@ public static class MessageCodec
         public bool Bool() => U8() switch { 0 => false, 1 => true, _ => throw new InvalidDataException("Bad bool.") };
         public int U16() => BinaryPrimitives.ReadUInt16LittleEndian(Take(2));
         public int I32() => BinaryPrimitives.ReadInt32LittleEndian(Take(4));
+        public uint U32() => BinaryPrimitives.ReadUInt32LittleEndian(Take(4));
+
+        public double F32()
+        {
+            float f = BinaryPrimitives.ReadSingleLittleEndian(Take(4));
+            if (!float.IsFinite(f)) throw new InvalidDataException("Non-finite number.");
+            return f;
+        }
+
+        public string Str()
+        {
+            int n = U8();
+            return System.Text.Encoding.UTF8.GetString(Take(n));
+        }
+
+        public TrafficKind TrafficKind()
+        {
+            byte k = U8();
+            if (k > (byte)Core.TrafficKind.Helicopter) throw new InvalidDataException("Bad traffic kind.");
+            return (TrafficKind)k;
+        }
+
+        public TrafficEntry TrafficEntry()
+        {
+            uint id = U32();
+            int age = U16();
+            double lat = F64(), lon = F64();
+            double alt = F32(), pitch = F32(), bank = F32(), hdg = F32(), ve = F32(), vu = F32(), vn = F32();
+            ushort lights = (ushort)U16();
+            byte flags = U8();
+            if (flags > 3) throw new InvalidDataException("Bad traffic flags.");
+            var pose = new FlightSample(lat, lon, alt, pitch, bank, hdg, ve, vu, vn, 0, 0, 0, 0, 0, 0, (flags & 1) != 0);
+            return new TrafficEntry(id, (ushort)age, new TrafficSample(pose, lights, (flags & 2) != 0));
+        }
         public long I64() => BinaryPrimitives.ReadInt64LittleEndian(Take(8));
         public ulong U64() => BinaryPrimitives.ReadUInt64LittleEndian(Take(8));
         public double F64() => BinaryPrimitives.ReadDoubleLittleEndian(Take(8));

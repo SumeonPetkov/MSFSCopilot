@@ -11,7 +11,7 @@ namespace SkyLink.Sim;
 /// executes writes. Every SimConnect exception is mapped back to the variable or event that
 /// caused it, so a wrong name in a definition is reported, never silently ignored.
 /// </summary>
-public sealed class SimConnectBridge : SimBridgeBase, IFlightSim
+public sealed partial class SimConnectBridge : SimBridgeBase, IFlightSim
 {
     private const uint DefTitle = 1, ReqTitle = 1;
     private const uint DefFlightRead = 30, ReqFlight = 30, DefFlightPose = 31, DefFlightMotion = 32;
@@ -155,6 +155,7 @@ public sealed class SimConnectBridge : SimBridgeBase, IFlightSim
         if (_catalogDone.Count < 2) return;
         var list = _aircraftList.Distinct().ToList();
         Info($"MSFS reports {list.Select(x => x.Title).Distinct().Count()} installed aircraft ({list.Count} liveries)");
+        OnMirrorCatalog(list);
         AircraftCatalog?.Invoke(list);
     }
 
@@ -239,6 +240,7 @@ public sealed class SimConnectBridge : SimBridgeBase, IFlightSim
         }
         if (!_open || !_channelReady) return; // never talk to the module before its areas are mapped
         StepFollowing(now);
+        PumpWorld(now);
         _module.Tick(now);
         AdvanceLVarValidation(now);
     }
@@ -333,10 +335,16 @@ public sealed class SimConnectBridge : SimBridgeBase, IFlightSim
                 Close();
                 break;
             case RecvId.Exception:
-                OnException(r.U32(12), r.U32(16), r.U32(20));
+                if (OnSpawnException(r.U32(RecvLayout.ExceptionCode), r.U32(RecvLayout.ExceptionSendId))) break;
+                OnException(r.U32(RecvLayout.ExceptionCode), r.U32(RecvLayout.ExceptionSendId), r.U32(RecvLayout.ExceptionIndex));
                 break;
             case RecvId.Event:
-                OnEvent(r.U32(16), r.U32(20));
+            case RecvId.EventObjectAddRemove:
+                if (OnWorldEvent(r.U32(RecvLayout.EventId), r.U32(RecvLayout.EventData))) break;
+                OnEvent(r.U32(RecvLayout.EventId), r.U32(RecvLayout.EventData));
+                break;
+            case RecvId.AssignedObjectId:
+                OnAssignedObjectId(r);
                 break;
             case RecvId.EventFilename:
                 OnFilenameEvent(r.U32(16), r.AnsiString(24, 260));
@@ -350,6 +358,7 @@ public sealed class SimConnectBridge : SimBridgeBase, IFlightSim
                 }
                 break;
             case RecvId.SimObjectData:
+            case RecvId.SimObjectDataBytype:
                 OnData(r);
                 break;
             case RecvId.ClientData:
@@ -417,6 +426,7 @@ public sealed class SimConnectBridge : SimBridgeBase, IFlightSim
         foreach (var (name, unit) in FlightReadLayout[9..15])
             Call(SimConnect_AddToDataDefinition(_h, DefFlightMotion, name, unit, DataType.Float64, 0, Unused), $"write {name}");
         foreach (var e in FreezeEvents) MapEvent(e);
+        OpenWorld();
 
         RequestAircraftIdentity();
     }
@@ -479,8 +489,10 @@ public sealed class SimConnectBridge : SimBridgeBase, IFlightSim
             SelectDefinition();
             return;
         }
+        if (OnWorldDataMessage(r, req)) return;
         if (req == ReqFlight)
         {
+            OnUserObjectId(r.U32(RecvLayout.DataObjectId));
             if (r.Length < 40 + FlightReadLayout.Length * 8) return;
             Span<double> f = stackalloc double[16];
             for (int i = 0; i < f.Length; i++) f[i] = r.F64(40 + i * 8);
@@ -810,6 +822,7 @@ public sealed class SimConnectBridge : SimBridgeBase, IFlightSim
         // Never leave the user's aircraft frozen when SkyLink stops or MSFS disconnects.
         if (_open && _frozen) SetFreeze(false, _now);
         _frozen = false;
+        CloseWorld(); // and never leave mirrored AI aircraft behind
         IsInFlight = false;
         LoadedFlight = null;
         _atcDefined.Clear();
